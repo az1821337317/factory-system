@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}用户管理{% endblock %}
+{% block content %}
+<h1 class="page-title">👥 车间工人管理</h1>
+
+<div class="card">
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>用户名</th>
+                    <th>所属车间</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for worker in workers %}
+                <tr>
+                    <td>{{ worker[0] }}</td>
+                    <td>{{ worker[1] }}</td>
+                    <td>
+                        {% set workshop_names = {'blow':'吹气','pu':'PU','paint':'喷漆','plastic':'滴塑','assembly':'成型'} %}
+                        {{ workshop_names.get(worker[3], worker[3]) }}
+                    </td>
+                    <td>
+                        <button class="btn-edit" onclick="openEditModal({{ worker[0] }}, '{{ worker[1] }}')" title="编辑用户">
+                            ✏️ 编辑
+                        </button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" style="text-align:center; color:#94a3b8; padding: 2rem;">暂无车间工人</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 编辑模态框 -->
+<div id="editModal" class="modal">
+    <div class="modal-content">
+        <h3 style="margin-bottom: 1.5rem;">✏️ 编辑用户</h3>
+        <input type="hidden" id="editUserId">
+        <div class="form-group">
+            <label>用户名</label>
+            <input type="text" id="editUsername" required style="width:100%; border-radius:30px;">
+        </div>
+        <div class="form-group">
+            <label>新密码 <span style="font-weight:400; color:#64748b;">(留空则不修改)</span></label>
+            <input type="password" id="editPassword" placeholder="留空则保持不变" style="width:100%; border-radius:30px;">
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn-outline btn-lg" onclick="closeEditModal()">取消</button>
+            <button type="button" class="btn btn-success btn-lg" id="saveUserBtn" onclick="saveUser()">保存修改</button>
+        </div>
+    </div>
+</div>
+
+<style>
+    .btn-edit {
+        background: white; border: 1.5px solid #cbd5e1; color: #334155;
+        padding: 0.5rem 1.2rem; border-radius: 40px; font-weight: 500; font-size: 0.9rem;
+        cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 0.3rem;
+    }
+    .btn-edit:hover { background: #f1f5f9; border-color: #94a3b8; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(0,0,0,0.05); }
+    .modal {
+        display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0,0,0,0.4); backdrop-filter: blur(6px); justify-content: center; align-items: center; z-index: 1000;
+    }
+    .modal-content {
+        background: rgba(255,255,255,0.95); backdrop-filter: blur(12px); padding: 2rem;
+        border-radius: 28px; width: 420px; max-width: 90%; box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+    }
+    .modal-actions { display: flex; gap: 1rem; justify-content: flex-end; margin-top: 2rem; }
+    .btn-outline, .btn-success, .btn-lg { border-radius: 40px !important; }
+    .btn-lg { padding: 0.8rem 1.8rem !important; font-size: 1rem !important; }
+</style>
+
+<script>
+    const modal = document.getElementById('editModal');
+    const userIdInput = document.getElementById('editUserId');
+    const usernameInput = document.getElementById('editUsername');
+    const passwordInput = document.getElementById('editPassword');
+    const saveBtn = document.getElementById('saveUserBtn');
+
+    function openEditModal(id, username) {
+        userIdInput.value = id;
+        usernameInput.value = username;
+        passwordInput.value = '';
+        modal.style.display = 'flex';
+    }
+
+    function closeEditModal() {
+        modal.style.display = 'none';
+    }
+
+    async function saveUser() {
+        const id = userIdInput.value;
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value.trim();
+
+        if (!username) {
+            alert('用户名不能为空');
+            return;
+        }
+
+        saveBtn.disabled = true;
+        saveBtn.textContent = '保存中...';
+
+        try {
+            const resp = await csrfFetch(`/admin/user/${id}/update`, {
+                method: 'POST',
+                body: JSON.stringify({username, password})
+            });
+            const data = await resp.json();
+            if (data.success) {
+                alert('修改成功');
+                location.reload();
+            } else {
+                alert('修改失败: ' + data.error);
+                saveBtn.disabled = false;
+                saveBtn.textContent = '保存修改';
+            }
+        } catch (err) {
+            alert('请求失败，请重试');
+            saveBtn.disabled = false;
+            saveBtn.textContent = '保存修改';
+        }
+    }
+
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeEditModal(); });
+</script>
+{% endblock %}

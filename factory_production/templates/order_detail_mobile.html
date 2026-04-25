@@ -1,0 +1,120 @@
+{% extends "base_mobile.html" %}
+{% block title %}指令单详情{% endblock %}
+{% block content %}
+<h1>📄 <span data-i18n="page_title">指令单详情</span></h1>
+
+<div class="card">
+    <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:center;">
+        <span><strong>{{ order[1] }}</strong></span>
+        {% set type_names = {'blow':'🔥 吹气','pu':'💧 PU','plastic':'🧪 滴塑','assembly':'📦 成型'} %}
+        <span style="background:#eef2ff; padding:0.2rem 0.8rem; border-radius:30px; font-size:0.75rem;">
+            {{ type_names.get(order[8], order[8]) }}
+        </span>
+        {% if order[9] %}
+        <span style="background:#fef3c7; padding:0.2rem 0.8rem; border-radius:30px; font-size:0.75rem;" data-i18n="direct_sale">🚚 直销</span>
+        {% endif %}
+        <span class="status-badge {% if order[6]=='pending' %}status-pending{% elif order[6]=='partial' %}status-partial{% else %}status-completed{% endif %}">
+            {% if order[6]=='pending' %}<span data-i18n="status_pending">待生产</span>
+            {% elif order[6]=='partial' %}<span data-i18n="status_partial">部分完成</span>
+            {% else %}<span data-i18n="status_completed">已完成</span>{% endif %}
+        </span>
+    </div>
+    <div style="margin-top:0.8rem;"><span data-i18n="label_product_code">货号</span>: {{ order[2] }}</div>
+    <div><span data-i18n="label_sole">鞋底</span>: {{ order[3] or '-' }} | <span data-i18n="label_upper">帮面</span>: {{ order[4] or '-' }}</div>
+    <div><span data-i18n="label_created_date">开单日期</span>: {{ order[5] }}</div>
+    {% if order[7] %}
+    <div style="margin-top:0.8rem; padding:0.8rem; background:#f8fafc; border-radius:12px;">📝 {{ order[7] }}</div>
+    {% endif %}
+
+    <!-- 图片展示区 -->
+    {% set images = order[14]|safe_json_load if order[14] else [] %}
+    {% if images %}
+    <div style="margin-top:0.8rem; display: flex; flex-wrap: wrap; gap: 0.6rem;">
+        {% for url in images %}
+        <img src="{{ url }}" loading="lazy" onerror="this.style.display='none'" style="width: 80px; height: 80px; object-fit: cover; border-radius: 12px; border: 1px solid #e2e8f0; cursor: pointer;" onclick="showImageViewer('{{ url }}')">
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+{% set sz_start_m = order[15] if order[15] else 37 %}
+{% set sz_end_m = order[16] if order[16] else 42 %}
+
+<details class="card" style="padding:0;">
+    <summary style="padding:1.2rem; font-weight:700; cursor:pointer;">🎨 <span data-i18n="color_details">颜色及码段</span>
+        <span style="background:linear-gradient(135deg,#eef2ff,#e0e7ff); color:#3730a3; padding:0.2rem 0.6rem; border-radius:20px; font-size:0.75rem; margin-left:0.5rem;">{{ sz_start_m }}~{{ sz_end_m }}码</span>
+    </summary>
+    <div style="padding:0 1.2rem 1.2rem;">
+        <div style="background:linear-gradient(135deg,#eef2ff,#e0e7ff); border:1px solid #c7d2fe; padding:0.5rem 0.8rem; border-radius:30px; font-size:0.8rem; font-weight:600; color:#3730a3; margin-bottom:0.8rem; text-align:center;">
+            码段范围：{{ sz_start_m }}码 ~ {{ sz_end_m }}码
+        </div>
+        {% for color in colors %}
+        {% set c_total = color.plan|sum %}
+        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:16px; padding:0.8rem; margin-bottom:0.6rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+                <strong style="color:#1e293b;">🎨 {{ color.color_name }}</strong>
+                <span style="font-size:0.8rem; color:#64748b;">计划{{ c_total }}双</span>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:0.5rem;">
+                {% for i in range(6) %}
+                <div style="text-align:center; background:#fff; border-radius:10px; padding:0.4rem; border:1px solid #e2e8f0;">
+                    <div style="font-size:0.65rem; color:#94a3b8; font-weight:600;">码段{{ i+1 }}({{ sz_start_m + i }}码)</div>
+                    <div style="font-size:0.85rem; font-weight:700; color:#2563eb;">{{ color.plan[i] }}双</div>
+                    <div style="font-size:0.7rem; color:#10b981;">完成{{ color.completed[i] }}双</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</details>
+
+<div class="card">
+    <h3>🏭 <span data-i18n="workshop_progress">车间进度</span></h3>
+    {% for task in tasks %}
+    <div style="display:flex; justify-content:space-between; align-items:center; padding:0.8rem 0; border-bottom:1px solid #e2e8f0;">
+        <span style="font-weight:600;">{{ task[0] }}</span>
+        <span>{{ task[2] }}/{{ task[1] }} <span data-i18n="unit_pair">双</span></span>
+        <span class="status-badge {% if task[3]=='pending' %}status-pending{% elif task[3]=='confirmed' %}status-partial{% else %}status-completed{% endif %}">
+            {% if task[3]=='pending' %}<span data-i18n="status_pending_short">待产</span>
+            {% elif task[3]=='confirmed' %}<span data-i18n="status_confirmed">已确认</span>
+            {% else %}<span data-i18n="status_completed_short">完成</span>{% endif %}
+        </span>
+    </div>
+    {% endfor %}
+</div>
+
+<a href="{{ url_for('index') }}" class="btn-outline" style="display:block; text-align:center;">← <span data-i18n="btn_back">返回列表</span></a>
+
+<!-- 图片放大模态框 -->
+<div id="imageViewerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 3000; justify-content: center; align-items: center;" onclick="closeImageViewer()">
+    <img id="viewerImage" style="max-width: 95%; max-height: 95%; object-fit: contain; border-radius: 16px;">
+    <button onclick="closeImageViewer()" style="position: absolute; top: 20px; right: 20px; background: rgba(255,255,255,0.2); color: white; border: none; border-radius: 40px; width: 48px; height: 48px; font-size: 24px; cursor: pointer;">✕</button>
+</div>
+
+<script>
+    const pageI18N = {
+        zh: { page_title:'指令单详情', direct_sale:'🚚 直销', status_pending:'待生产', status_partial:'部分完成', status_completed:'已完成',
+              label_product_code:'货号', label_sole:'鞋底', label_upper:'帮面', label_created_date:'开单日期', color_details:'颜色及码段',
+              th_color:'颜色', workshop_progress:'车间进度', unit_pair:'双', status_pending_short:'待产', status_confirmed:'已确认',
+              status_completed_short:'完成', btn_back:'返回列表' },
+        en: { page_title:'Order Details', direct_sale:'🚚 Direct', status_pending:'Pending', status_partial:'Partial', status_completed:'Completed',
+              label_product_code:'Product Code', label_sole:'Sole', label_upper:'Upper', label_created_date:'Created', color_details:'Colors & Sizes',
+              th_color:'Color', workshop_progress:'Workshop Progress', unit_pair:'pairs', status_pending_short:'Pending', status_confirmed:'Confirmed',
+              status_completed_short:'Done', btn_back:'Back to List' }
+    };
+    Object.assign(I18N.zh, pageI18N.zh); Object.assign(I18N.en, pageI18N.en);
+    if (window.updatePageTexts) window.updatePageTexts(currentLang);
+
+    function showImageViewer(url) {
+        document.getElementById('viewerImage').src = url;
+        document.getElementById('imageViewerModal').style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+    function closeImageViewer() {
+        document.getElementById('imageViewerModal').style.display = 'none';
+        document.body.style.overflow = '';
+    }
+    window.safe_json_load = function(s) { try { return JSON.parse(s); } catch(e) { return []; } };
+</script>
+{% endblock %}

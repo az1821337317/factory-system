@@ -1,0 +1,124 @@
+{% extends "base_mobile.html" %}
+{% block title %}{% endblock %}
+{% block content %}
+<div style="margin-bottom:1rem;">
+    <h1>👥 <span data-i18n="page_title">车间工人管理</span></h1>
+    <p style="color:#64748b;font-size:0.85rem;" data-i18n="page_subtitle">查看和编辑车间工人信息</p>
+</div>
+
+<div class="card" style="padding: 0.8rem 1.2rem;">
+    {% for worker in workers %}
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 0; border-bottom: 1px solid #e2e8f0;">
+        <div>
+            <div style="font-weight: 700; font-size: 1.1rem; margin-bottom: 0.2rem;">{{ worker[1] }}</div>
+            <div style="font-size: 0.85rem; color: #64748b;">
+                {% if worker[3] == 'blow' %}<span data-i18n="workshop_blow">吹气车间</span>
+                {% elif worker[3] == 'pu' %}<span data-i18n="workshop_pu">PU车间</span>
+                {% elif worker[3] == 'paint' %}<span data-i18n="workshop_paint">喷漆车间</span>
+                {% elif worker[3] == 'plastic' %}<span data-i18n="workshop_plastic">滴塑车间</span>
+                {% elif worker[3] == 'assembly' %}<span data-i18n="workshop_assembly">成型车间</span>
+                {% else %}{{ worker[3] }}{% endif %}
+            </div>
+        </div>
+        <button class="btn-outline" style="padding: 0.6rem 1.5rem; border-radius: 40px; font-weight: 600;" onclick="openEditDrawer({{ worker[0] }}, '{{ worker[1] }}')">✏️ <span data-i18n="btn_edit">编辑</span></button>
+    </div>
+    {% else %}
+    <div style="text-align: center; color: #94a3b8; padding: 2rem 0;" data-i18n="no_workers">暂无车间工人</div>
+    {% endfor %}
+</div>
+
+<!-- 编辑抽屉 -->
+<div id="editDrawer" style="display: none; position: fixed; bottom: 0; left: 0; right: 0; background: white; border-radius: 30px 30px 0 0; padding: 1.5rem 1.2rem; box-shadow: 0 -10px 30px rgba(0,0,0,0.15); z-index: 2000; max-height: 70vh; overflow-y: auto;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+        <h3 style="margin: 0; font-size: 1.3rem;">✏️ <span data-i18n="modal_title">编辑用户</span></h3>
+        <button type="button" class="btn-icon" onclick="closeEditDrawer()" style="width: 44px; height: 44px; border-radius: 30px; background: #f1f5f9; border: none; font-size: 1.5rem;">✕</button>
+    </div>
+    <input type="hidden" id="editUserId">
+    <div style="margin-bottom: 1.2rem;">
+        <label style="font-weight: 600; margin-bottom: 0.4rem; display: block;" data-i18n="label_username">用户名</label>
+        <input type="text" id="editUsername" required style="width: 100%; padding: 0.9rem; border-radius: 30px; border: 1.5px solid #e2e8f0; font-size: 1rem;">
+    </div>
+    <div style="margin-bottom: 1.5rem;">
+        <label style="font-weight: 600; margin-bottom: 0.4rem; display: block;" data-i18n="label_password">新密码 <span style="font-weight: 400; color: #64748b;" data-i18n="password_hint">(留空则不修改)</span></label>
+        <input type="password" id="editPassword" placeholder="" data-i18n-placeholder="password_placeholder" style="width: 100%; padding: 0.9rem; border-radius: 30px; border: 1.5px solid #e2e8f0; font-size: 1rem;">
+    </div>
+    <div style="display: flex; gap: 1rem;">
+        <button type="button" class="btn-outline" onclick="closeEditDrawer()" style="flex: 1; padding: 1rem; border-radius: 40px; font-weight: 600;" data-i18n="btn_cancel">取消</button>
+        <button type="button" class="btn btn-success" id="saveUserBtn" onclick="saveUser()" style="flex: 1; padding: 1rem; border-radius: 40px; font-weight: 600; background: #10b981; color: white; border: none;" data-i18n="btn_save">保存</button>
+    </div>
+</div>
+<div id="overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.3); z-index: 1999;" onclick="closeEditDrawer()"></div>
+
+<style>
+    .btn-outline { background: white; border: 1.5px solid #cbd5e1; color: #1e293b; }
+    .btn-success { background: #10b981; color: white; border: none; }
+</style>
+
+<script>
+    const pageI18N = {
+        zh: {
+            page_title: '车间工人管理', page_subtitle: '查看和编辑车间工人信息',
+            workshop_blow: '吹气车间', workshop_pu: 'PU车间', workshop_paint: '喷漆车间', workshop_plastic: '滴塑车间', workshop_assembly: '成型车间',
+            btn_edit: '编辑', no_workers: '暂无车间工人', modal_title: '编辑用户', label_username: '用户名', label_password: '新密码',
+            password_hint: '(留空则不修改)', password_placeholder: '留空则保持不变', btn_cancel: '取消', btn_save: '保存',
+            alert_username_required: '用户名不能为空', alert_update_success: '修改成功', alert_update_failed: '修改失败', submitting: '保存中...'
+        },
+        en: {
+            page_title: 'Workshop Worker Management', page_subtitle: 'View and edit worker information',
+            workshop_blow: 'Blow Workshop', workshop_pu: 'PU Workshop', workshop_paint: 'Paint Workshop', workshop_plastic: 'Plastic Workshop', workshop_assembly: 'Assembly Workshop',
+            btn_edit: 'Edit', no_workers: 'No workers found', modal_title: 'Edit User', label_username: 'Username', label_password: 'New Password',
+            password_hint: '(leave blank to keep unchanged)', password_placeholder: 'Leave blank to keep unchanged', btn_cancel: 'Cancel', btn_save: 'Save',
+            alert_username_required: 'Username cannot be empty', alert_update_success: 'Update successful', alert_update_failed: 'Update failed', submitting: 'Saving...'
+        }
+    };
+    Object.assign(I18N.zh, pageI18N.zh); Object.assign(I18N.en, pageI18N.en);
+    if (window.updatePageTexts) window.updatePageTexts(currentLang);
+
+    const editDrawer = document.getElementById('editDrawer');
+    const overlay = document.getElementById('overlay');
+    const saveBtn = document.getElementById('saveUserBtn');
+
+    function openEditDrawer(id, username) {
+        document.getElementById('editUserId').value = id;
+        document.getElementById('editUsername').value = username;
+        document.getElementById('editPassword').value = '';
+        editDrawer.style.display = 'block';
+        overlay.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeEditDrawer() {
+        editDrawer.style.display = 'none';
+        overlay.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+
+    async function saveUser() {
+        const id = document.getElementById('editUserId').value;
+        const username = document.getElementById('editUsername').value.trim();
+        const password = document.getElementById('editPassword').value.trim();
+
+        if (!username) { alert(I18N[currentLang].alert_username_required); return; }
+
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = `<span data-i18n="submitting">${I18N[currentLang].submitting}</span>`;
+
+        try {
+            const resp = await csrfFetch(`/admin/user/${id}/update`, {
+                method: 'POST',
+                body: JSON.stringify({username, password})
+            });
+            const data = await resp.json();
+            if (data.success) { alert(I18N[currentLang].alert_update_success); location.reload(); }
+            else { alert(I18N[currentLang].alert_update_failed + ': ' + data.error); }
+        } catch { alert(I18N[currentLang].alert_update_failed); }
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = `<span data-i18n="btn_save">${I18N[currentLang].btn_save}</span>`;
+    }
+
+    overlay.addEventListener('click', closeEditDrawer);
+    window.openEditDrawer = openEditDrawer;
+    window.closeEditDrawer = closeEditDrawer;
+    window.saveUser = saveUser;
+</script>
+{% endblock %}

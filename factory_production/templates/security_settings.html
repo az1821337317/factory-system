@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}安全设置{% endblock %}
+{% block content %}
+<h1 style="font-size: 1.8rem; font-weight: 700; margin-bottom: 1rem;">🔐 安全设置</h1>
+
+<div class="card" style="max-width: 500px;">
+    <form method="post" id="securityForm">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="form-group">
+            <label>新用户名</label>
+            <input type="text" name="new_username" value="{{ current_user.username }}" required
+                   style="width: 100%; padding: 0.7rem 1rem; border-radius: 18px; border: 1.5px solid #e2e8f0;">
+            <div style="font-size: 0.8rem; color: #64748b; margin-top: 0.3rem;">修改用户名后需重新登录</div>
+        </div>
+
+        <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #e2e8f0;">
+
+        <div class="form-group">
+            <label>原密码</label>
+            <input type="password" name="old_password" placeholder="如需修改密码请输入原密码"
+                   style="width: 100%; padding: 0.7rem 1rem; border-radius: 18px; border: 1.5px solid #e2e8f0;">
+        </div>
+
+        <div class="form-group">
+            <label>新密码</label>
+            <input type="password" name="new_password" placeholder="留空则不修改"
+                   style="width: 100%; padding: 0.7rem 1rem; border-radius: 18px; border: 1.5px solid #e2e8f0;">
+        </div>
+
+        <div class="form-group">
+            <label>确认新密码</label>
+            <input type="password" name="confirm_password" placeholder="再次输入新密码"
+                   style="width: 100%; padding: 0.7rem 1rem; border-radius: 18px; border: 1.5px solid #e2e8f0;">
+        </div>
+
+        <div style="display: flex; gap: 1rem; margin-top: 1.5rem;">
+            <a href="{{ url_for('index') }}" class="btn btn-secondary" style="flex: 1; text-align: center;">取消</a>
+            <button type="submit" id="saveBtn" class="btn btn-success" style="flex: 1;">保存设置</button>
+        </div>
+    </form>
+</div>
+
+<script>
+    document.getElementById('securityForm').addEventListener('submit', function() {
+        document.getElementById('saveBtn').disabled = true;
+        document.getElementById('saveBtn').textContent = '保存中...';
+    });
+</script>
+{% endblock %}

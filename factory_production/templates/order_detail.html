@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}指令单详情{% endblock %}
+{% block extra_css %}
+<style>
+    .detail-header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        align-items: center;
+    }
+    .detail-item {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        font-size: 0.9rem;
+    }
+    .detail-item strong {
+        color: #1e293b;
+        font-weight: 600;
+    }
+
+    /* 码段范围提示条 */
+    .size-range-bar {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: linear-gradient(135deg, #eef2ff, #e0e7ff);
+        border: 1px solid #c7d2fe;
+        padding: 0.4rem 1rem;
+        border-radius: 30px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #3730a3;
+        margin-bottom: 1rem;
+    }
+    .size-range-bar .range-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #4f46e5;
+    }
+
+    /* 颜色卡片 */
+    .color-card {
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 20px;
+        padding: 1.25rem;
+        margin-bottom: 1rem;
+        transition: box-shadow 0.2s;
+    }
+    .color-card:hover {
+        box-shadow: 0 8px 24px -6px rgba(0,0,0,0.08);
+    }
+    .color-card-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    .color-name {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #1e293b;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    .color-total {
+        font-size: 0.85rem;
+        color: #64748b;
+        font-weight: 500;
+    }
+    .color-total .num {
+        font-size: 1.2rem;
+        font-weight: 700;
+        color: #2563eb;
+    }
+
+    /* 码段网格 */
+    .size-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 0.75rem;
+    }
+    .size-cell {
+        text-align: center;
+        background: #f8fafc;
+        border-radius: 14px;
+        padding: 0.75rem 0.5rem;
+        border: 1px solid #e2e8f0;
+    }
+    .size-cell-label {
+        font-size: 0.7rem;
+        color: #94a3b8;
+        font-weight: 600;
+        margin-bottom: 0.2rem;
+    }
+    .size-cell-code {
+        font-size: 1rem;
+        font-weight: 700;
+        color: #1e293b;
+        margin-bottom: 0.3rem;
+    }
+    .size-cell-plan {
+        font-size: 0.8rem;
+        color: #2563eb;
+        font-weight: 600;
+    }
+    .size-cell-done {
+        font-size: 0.75rem;
+        color: #10b981;
+        font-weight: 500;
+    }
+    .size-cell-progress {
+        margin-top: 0.4rem;
+        height: 4px;
+        background: #e2e8f0;
+        border-radius: 2px;
+        overflow: hidden;
+    }
+    .size-cell-progress-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #10b981, #34d399);
+        border-radius: 2px;
+        transition: width 0.3s;
+    }
+
+    @media (max-width: 768px) {
+        .size-grid {
+            grid-template-columns: repeat(3, 1fr);
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+{% set sz_start = (order[15]|int) if order[15] else 37 %}
+{% set sz_end = (order[16]|int) if order[16] else 42 %}
+
+<h1 class="page-title">📄 指令单详情 - {{ order[1] }}</h1>
+
+<!-- 基本信息 -->
+<div class="card">
+    <div class="detail-header">
+        <div class="detail-item"><strong>生产单号：</strong> {{ order[1] }}</div>
+        <div class="detail-item"><strong>货号：</strong> {{ order[2] }}</div>
+        <div class="detail-item"><strong>类型：</strong>
+            {% set type_names = {'blow':'🔥 吹气指令单','pu':'💧 PU指令单','plastic':'🧪 滴塑指令单','assembly':'📦 成型指令单'} %}
+            <span style="background:#eef2ff; padding:0.3rem 1rem; border-radius:30px; font-weight:600;">
+                {{ type_names.get(order[8], order[8]) }}
+            </span>
+        </div>
+        <div class="detail-item"><strong>鞋底型号：</strong> {{ order[3] or '-' }}</div>
+        <div class="detail-item"><strong>帮面型号：</strong> {{ order[4] or '-' }}</div>
+        <div class="detail-item"><strong>开单日期：</strong> {{ order[5] }}</div>
+        <div class="detail-item"><strong>状态：</strong>
+            {% if order[6] == 'pending' %}<span class="status-badge status-pending">待生产</span>
+            {% elif order[6] == 'partial' %}<span class="status-badge status-partial">部分完成</span>
+            {% else %}<span class="status-badge status-completed">已完成</span>{% endif %}
+        </div>
+        {% if order[9] %}
+        <div class="detail-item"><span style="background:#fef3c7; padding:0.3rem 1rem; border-radius:30px;">🚚 直接销售</span></div>
+        {% endif %}
+    </div>
+    {% if order[7] %}
+    <div style="margin-top:1rem; padding:1rem; background: rgba(255,255,255,0.5); border-radius:16px;">
+        <strong>备注：</strong> {{ order[7] }}
+    </div>
+    {% endif %}
+
+    {% set images = order[14]|safe_json_load if order[14] else [] %}
+    {% if images %}
+    <div style="margin-top:1rem; display: flex; flex-wrap: wrap; gap: 0.8rem;">
+        {% for url in images %}
+        <img src="{{ url }}" loading="lazy" onerror="this.style.display='none'" style="width: 100px; height: 100px; object-fit: cover; border-radius: 12px; border: 1px solid #e2e8f0; cursor: pointer;" onclick="showImageViewer('{{ url }}')">
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- 颜色及码段卡片 -->
+<div class="card">
+    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.8rem; margin-bottom: 0.5rem;">
+        <h3 style="font-size: 1.3rem; font-weight: 700;">🎨 颜色及码段数量</h3>
+        <div class="size-range-bar">
+            <span class="range-dot"></span>
+            <span>码段范围：{{ sz_start }}码 ~ {{ sz_end }}码（{{ sz_end - sz_start + 1 }}个码段）</span>
+        </div>
+    </div>
+
+    {% for color in colors %}
+    {% set total_plan = color.plan|sum %}
+    {% set total_done = color.completed|sum %}
+    {% set pct = (total_done / total_plan * 100)|int if total_plan > 0 else 0 %}
+    <div class="color-card">
+        <div class="color-card-header">
+            <div class="color-name">🎨 {{ color.color_name }}</div>
+            <div class="color-total">
+                计划 <span class="num">{{ total_plan }}</span> 双 / 完成 <span class="num" style="color: #10b981;">{{ total_done }}</span> 双
+            </div>
+        </div>
+        <div class="size-grid">
+            {% for i in range(6) %}
+            {% set actual_size = sz_start + i %}
+            {% set plan = color.plan[i] %}
+            {% set done = color.completed[i] %}
+            {% set seg_pct = (done / plan * 100)|int if plan > 0 else 0 %}
+            <div class="size-cell">
+                <div class="size-cell-label">码段{{ i+1 }}</div>
+                <div class="size-cell-code">{{ actual_size }}码</div>
+                <div class="size-cell-plan">{{ plan }}双</div>
+                <div class="size-cell-done">完成 {{ done }}双</div>
+                <div class="size-cell-progress">
+                    <div class="size-cell-progress-bar" style="width: {{ seg_pct }}%"></div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- 车间生产进度 -->
+<div class="card">
+    <h3 style="font-size: 1.3rem; font-weight: 700; margin-bottom: 1rem;">🏭 车间生产进度</h3>
+    <div class="table-wrapper">
+        <table>
+            <thead><tr><th>车间</th><th>计划</th><th>完成</th><th>状态</th><th>完成时间</th></tr></thead>
+            <tbody>
+                {% for task in tasks %}
+                <tr>
+                    <td><strong>{{ task[0] }}</strong></td>
+                    <td>{{ task[1] }}</td>
+                    <td>{{ task[2] }}</td>
+                    <td>
+                        {% if task[3] == 'pending' %}<span class="status-badge status-pending">待生产</span>
+                        {% elif task[3] == 'confirmed' %}<span class="status-badge status-partial">已确认</span>
+                        {% elif task[3] == 'completed' %}<span class="status-badge status-completed">已完成</span>
+                        {% else %}{{ task[3] }}{% endif %}
+                    </td>
+                    <td style="color: #64748b;">{{ task[4] or '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div style="margin-top:1.5rem;">
+    <a href="{{ url_for('index') }}" class="btn btn-secondary">← 返回列表</a>
+</div>
+
+<!-- 图片放大模态框 -->
+<div id="imageViewerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); z-index: 2000; justify-content: center; align-items: center;" onclick="closeImageViewer()">
+    <img id="viewerImage" style="max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 12px;">
+    <button onclick="closeImageViewer()" style="position: absolute; top: 20px; right: 20px; background: rgba(255,255,255,0.2); color: white; border: none; border-radius: 40px; width: 48px; height: 48px; font-size: 24px; cursor: pointer;">✕</button>
+</div>
+
+<script>
+    function showImageViewer(url) {
+        document.getElementById('viewerImage').src = url;
+        document.getElementById('imageViewerModal').style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+    function closeImageViewer() {
+        document.getElementById('imageViewerModal').style.display = 'none';
+        document.body.style.overflow = '';
+    }
+</script>
+{% endblock %}

@@ -1,0 +1,578 @@
+{% extends "base_mobile.html" %}
+{% block title %}{% endblock %}
+{% block content %}
+<div style="margin-bottom:1rem;">
+    <h1>➕ <span data-i18n="page_title">新建指令单</span></h1>
+    <p style="color:#64748b;font-size:0.85rem;" data-i18n="page_subtitle">填写生产信息并提交</p>
+</div>
+
+<!-- 类型下拉选择器 -->
+<div class="card" style="padding: 0.8rem 1.2rem;">
+    <select id="orderTypeSelect" style="font-weight:600;background:#f1f5f9;" data-i18n-options="type_blow,type_pu,type_plastic,type_assembly">
+        <option value="blow" {% if order_type == 'blow' %}selected{% endif %}>🔥 吹气指令单</option>
+        <option value="pu" {% if order_type == 'pu' %}selected{% endif %}>💧 PU指令单</option>
+        <option value="plastic" {% if order_type == 'plastic' %}selected{% endif %}>🧪 滴塑指令单</option>
+        <option value="assembly" {% if order_type == 'assembly' %}selected{% endif %}>📦 成型指令单</option>
+    </select>
+</div>
+
+<form method="post" id="orderForm">
+    <input type="hidden" name="order_type" id="orderTypeInput" value="{{ order_type }}">
+    <input type="hidden" name="sole_material_id" id="soleMaterialIdHidden">
+    <input type="hidden" name="upper_material_id" id="upperMaterialIdHidden">
+    <input type="hidden" name="image_urls" id="imageUrlsInput" value="[]">
+    <!-- 起始码/结束码仅用于参考，不影响提交的码段序号 -->
+    <input type="hidden" name="global_size_start" id="globalSizeStartHidden" value="37">
+    <input type="hidden" name="global_size_end" id="globalSizeEndHidden" value="42">
+
+    <!-- 基本信息卡片 -->
+    <div class="card" style="padding:1rem;">
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.8rem;">
+            <div><label data-i18n="label_created_date">开单日期</label><input type="date" name="created_date" value="{{ today }}" required></div>
+            <div id="productCodeWrapper"><label data-i18n="label_product_code">货号 *</label><input type="text" name="product_code" id="productCode" placeholder="XH-2024"></div>
+            <div id="soleModelWrapper" style="display:none;"><label data-i18n="label_sole_model">鞋底型号 *</label><input type="text" name="sole_model" id="soleModel" placeholder="RB-01"></div>
+            <div id="upperModelWrapper" style="display:none;"><label data-i18n="label_upper_model">帮面型号 *</label><input type="text" name="upper_model" id="upperModel" placeholder="MESH-BLK"></div>
+        </div>
+    </div>
+
+    <!-- 滴塑类型选择 -->
+    <div id="plasticTypeWrapper" class="card" style="padding:1rem; display:none;">
+        <label data-i18n="label_plastic_type">制作类型</label>
+        <select name="plastic_type" id="plasticTypeSelect" onchange="togglePlasticModel()" data-i18n-options="plastic_upper,plastic_sole">
+            <option value="upper">🧵 帮面</option>
+            <option value="sole">👟 底片</option>
+        </select>
+        <p style="font-size:0.75rem; color:#64748b; margin-top:0.3rem;" data-i18n="plastic_hint">底片将使用鞋底型号字段记录</p>
+    </div>
+
+    <!-- 直接销售 -->
+    <div id="directSaleWrapper" class="card" style="padding:1rem; display:none; background: #f8fafc; border: 1.5px solid #e2e8f0;">
+        <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 0.8rem;">
+                <div style="width: 44px; height: 44px; background: #fef3c7; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 1.6rem;">🚚</div>
+                <div>
+                    <div style="font-weight: 700; font-size: 1rem;" data-i18n="direct_sale_title">直接销售</div>
+                    <div style="font-size: 0.8rem; color: #64748b;" data-i18n="direct_sale_desc">鞋底不经过喷漆，直接出库</div>
+                </div>
+            </div>
+            <label class="toggle-switch">
+                <input type="checkbox" name="direct_sale" value="1">
+                <span class="slider"></span>
+            </label>
+        </div>
+    </div>
+
+    <!-- 颜色码段（固定6个） -->
+    <div class="card" style="padding:1rem;">
+        <h3 style="display:flex;align-items:center;gap:6px; margin:0 0 1rem 0;">🎨 <span data-i18n="color_config">颜色配置</span></h3>
+        
+        <!-- 码段范围输入（仅用于参考） -->
+        <div style="background: #f1f5f9; border-radius: 18px; padding: 1rem; margin-bottom: 1.2rem;">
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <div style="flex:1;"><label style="font-size:0.8rem;" data-i18n="size_start">起始码</label><input type="number" id="globalSizeStart" value="37" min="1" max="50" style="width:100%; padding:0.7rem; text-align:center; font-weight:600; margin-bottom:0;"></div>
+                <div style="flex:1;"><label style="font-size:0.8rem;" data-i18n="size_end">结束码</label><input type="number" id="globalSizeEnd" value="42" min="1" max="50" style="width:100%; padding:0.7rem; text-align:center; font-weight:600; margin-bottom:0;"></div>
+            </div>
+            <p style="margin:0.5rem 0 0; font-size:0.75rem; color:#64748b; text-align:center;" data-i18n="size_hint">码段1~6依次对应</p>
+        </div>
+
+        <div id="colorsContainer"></div>
+        <button type="button" id="addColorBtn" class="btn-outline" style="margin-top:0.8rem; width:100%;">➕ <span data-i18n="add_color">添加颜色</span></button>
+    </div>
+
+    <!-- 成型来源（完整保留） -->
+    <div id="assemblySourcesWrapper" class="card" style="padding:1rem; display:none;">
+        <div style="margin-bottom:1.5rem;">
+            <h4>👟 <span data-i18n="sole_source_title">鞋底来源</span></h4>
+            <select name="sole_source" id="soleSource" onchange="onSoleSourceChange()" data-i18n-options="sole_local_blow,sole_local_pu,sole_domestic,sole_other">
+                <option value="local_blow">本地吹气</option>
+                <option value="local_pu">本地PU</option>
+                <option value="domestic">国内鞋材</option>
+                <option value="other">🔧 其他来源</option>
+            </select>
+            <button type="button" id="selectSoleBtn" class="btn-outline" style="display:none; width:100%; margin-top:0.5rem;" onclick="searchMaterial('sole')">🔍 <span data-i18n="select_material">选择鞋材</span></button>
+            <div id="soleMaterialInfo" style="display:none; margin-top:0.5rem; padding:0.6rem; background:#eef2ff; border-radius:16px;"></div>
+            <input type="hidden" name="sole_material_id" id="soleMaterialIdHidden">
+        </div>
+        <div style="margin-bottom:1.5rem;">
+            <h4>🧵 <span data-i18n="upper_source_title">帮面来源</span></h4>
+            <select name="upper_source" id="upperSource" onchange="onUpperSourceChange()" data-i18n-options="upper_local_plastic,upper_domestic,upper_other">
+                <option value="local_plastic">本地滴塑</option>
+                <option value="domestic">国内鞋材</option>
+                <option value="other">🔧 其他来源</option>
+            </select>
+            <button type="button" id="selectUpperBtn" class="btn-outline" style="display:none; width:100%; margin-top:0.5rem;" onclick="searchMaterial('upper')">🔍 <span data-i18n="select_material">选择鞋材</span></button>
+            <div id="upperMaterialInfo" style="display:none; margin-top:0.5rem; padding:0.6rem; background:#eef2ff; border-radius:16px;"></div>
+            <input type="hidden" name="upper_material_id" id="upperMaterialIdHidden">
+        </div>
+        <div>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.8rem;">
+                <h4>📎 <span data-i18n="other_source_title">其他来源</span></h4>
+                <button type="button" class="btn-outline btn-small" onclick="addOtherSourceRow()" style="padding:0.4rem 1rem;">➕ <span data-i18n="add_other">添加</span></button>
+            </div>
+            <div id="otherSourcesContainer"></div>
+            <p style="font-size:0.75rem; color:#64748b; margin-top:0.5rem;" data-i18n="other_optional">可选，可添加多个</p>
+        </div>
+    </div>
+
+    <!-- 图片上传 -->
+    <div class="card" style="padding:1rem;">
+        <label>📷 <span data-i18n="upload_images">上传图片（可选）</span></label>
+        <div id="imageUploadContainer" style="display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.6rem;"></div>
+        <div style="display: flex; gap: 0.6rem; align-items: center; margin-top: 0.6rem;">
+            <label class="btn-outline" style="cursor: pointer; padding: 0.6rem 1rem; font-size:0.9rem;">
+                ➕ <span data-i18n="select_images">选择图片</span>
+                <input type="file" id="imageUploadInput" accept="image/*" multiple style="display: none;">
+            </label>
+            <span style="color: #64748b; font-size: 0.75rem;" data-i18n="image_hint">支持多选，每张≤5MB</span>
+        </div>
+    </div>
+
+    <!-- 备注 -->
+    <div class="card" style="padding:1rem;">
+        <label data-i18n="label_notes">备注</label>
+        <textarea name="notes" rows="2" placeholder="" data-i18n-placeholder="notes_placeholder"></textarea>
+    </div>
+
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div style="display:flex; gap:1rem; margin:1rem 0 5rem;">
+        <a href="{{ url_for('index') }}" class="btn-outline" style="flex:1;" data-i18n="btn_cancel">取消</a>
+        <button type="submit" id="submitBtn" class="btn btn-success" style="flex:1;font-size:1.1rem;">🚀 <span data-i18n="btn_create">创建指令单</span></button>
+    </div>
+</form>
+
+<!-- 搜索模态 -->
+<div id="materialModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:#f8fafc; z-index:2000; overflow-y:auto; padding:1rem;">
+    <div style="display:flex; gap:1rem; margin-bottom:1rem;"><button class="btn-outline" onclick="closeModal()">← <span data-i18n="modal_back">返回</span></button><h3 data-i18n="modal_select_material">选择材料</h3></div>
+    <input type="text" id="materialSearchInput" placeholder="" data-i18n-placeholder="search_placeholder">
+    <div id="materialSearchResults" style="margin-top:1rem;"></div>
+</div>
+
+<style>
+    .color-row-mobile { background: #ffffff; border-radius: 16px; padding: 0.9rem; margin-bottom: 0.8rem; border: 1px solid #e5e7eb; }
+    .color-row-mobile input[type="text"] { font-weight: 600; }
+    .color-row-mobile input[type="number"] { text-align: center; }
+    .remove-color-btn { background: #fee2e2; color: #dc2626; border-radius: 12px; border: none; width: 40px; height: 40px; font-size: 1.2rem; cursor: pointer; }
+    .toggle-switch { position: relative; display: inline-block; width: 52px; height: 28px; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: .3s; border-radius: 34px; }
+    .slider:before { position: absolute; content: ""; height: 22px; width: 22px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
+    input:checked + .slider { background-color: #f59e0b; }
+    input:checked + .slider:before { transform: translateX(24px); }
+    .other-source-row { background: #f8fafc; border-radius: 16px; padding: 1rem; margin-bottom: 0.8rem; border: 1px solid #e2e8f0; }
+    .remove-other-btn { background: #fee2e2; color: #dc2626; border: none; width: 40px; height: 40px; border-radius: 12px; font-size: 1.2rem; cursor: pointer; }
+    .btn-small { padding: 0.35rem 1rem !important; font-size: 0.85rem !important; }
+</style>
+
+<script>
+    // 多语言包
+    const pageI18N = {
+        zh: {
+            page_title: '新建指令单', page_subtitle: '填写生产信息并提交',
+            type_blow: '🔥 吹气指令单', type_pu: '💧 PU指令单', type_plastic: '🧪 滴塑指令单', type_assembly: '📦 成型指令单',
+            label_created_date: '开单日期', label_product_code: '货号 *', label_sole_model: '鞋底型号 *', label_upper_model: '帮面型号 *',
+            label_plastic_type: '制作类型', plastic_upper: '🧵 帮面', plastic_sole: '👟 底片', plastic_hint: '底片将使用鞋底型号字段记录',
+            direct_sale_title: '直接销售', direct_sale_desc: '鞋底不经过喷漆，直接出库',
+            color_config: '颜色配置', size_start: '起始码', size_end: '结束码', size_hint: '码段1~6依次对应',
+            add_color: '添加颜色',
+            sole_source_title: '鞋底来源', sole_local_blow: '本地吹气', sole_local_pu: '本地PU', sole_domestic: '国内鞋材', sole_other: '🔧 其他来源',
+            upper_source_title: '帮面来源', upper_local_plastic: '本地滴塑', upper_domestic: '国内鞋材', upper_other: '🔧 其他来源',
+            other_source_title: '其他来源', add_other: '添加', other_optional: '可选，可添加多个',
+            select_material: '选择鞋材',
+            upload_images: '上传图片（可选）', select_images: '选择图片', image_hint: '支持多选，每张≤5MB',
+            label_notes: '备注', notes_placeholder: '选填',
+            btn_cancel: '取消', btn_create: '创建指令单',
+            modal_back: '返回', modal_select_material: '选择材料', search_placeholder: '搜索货号/名称/颜色',
+            alert_enter_sole: '请输入鞋底型号', alert_enter_upper: '请输入帮面型号', alert_enter_plastic_sole: '请输入底片型号', alert_enter_plastic_upper: '请输入帮面型号',
+            alert_select_sole: '请选择鞋底材料', alert_select_upper: '请选择帮面材料', alert_enter_qty: '请填写数量', alert_keep_one_color: '至少保留一个颜色',
+            selected_prefix: '已选', available: '可用', color_name_placeholder: '颜色名称', submitting: '提交中...',
+            alert_upload_failed: '上传失败，请重试', alert_file_too_large: '图片不能超过10MB'
+        },
+        en: {
+            page_title: 'New Production Order', page_subtitle: 'Fill in production information and submit',
+            type_blow: '🔥 Blow Order', type_pu: '💧 PU Order', type_plastic: '🧪 Plastic Order', type_assembly: '📦 Assembly Order',
+            label_created_date: 'Created Date', label_product_code: 'Product Code *', label_sole_model: 'Sole Model *', label_upper_model: 'Upper Model *',
+            label_plastic_type: 'Production Type', plastic_upper: '🧵 Upper', plastic_sole: '👟 Sole', plastic_hint: 'Sole will be recorded in sole model field',
+            direct_sale_title: 'Direct Sale', direct_sale_desc: 'Sole skips painting, direct outbound',
+            color_config: 'Color Configuration', size_start: 'Start Size', size_end: 'End Size', size_hint: 'Segment 1~6 correspond sequentially',
+            add_color: 'Add Color',
+            sole_source_title: 'Sole Source', sole_local_blow: 'Local Blow', sole_local_pu: 'Local PU', sole_domestic: 'Domestic Material', sole_other: '🔧 Other',
+            upper_source_title: 'Upper Source', upper_local_plastic: 'Local Plastic', upper_domestic: 'Domestic Material', upper_other: '🔧 Other',
+            other_source_title: 'Other Source', add_other: 'Add', other_optional: 'Optional, can add multiple',
+            select_material: 'Select Material',
+            upload_images: 'Upload Images (Optional)', select_images: 'Select Images', image_hint: 'Multiple, max 5MB each',
+            label_notes: 'Notes', notes_placeholder: 'Optional',
+            btn_cancel: 'Cancel', btn_create: 'Create Order',
+            modal_back: 'Back', modal_select_material: 'Select Material', search_placeholder: 'Search code/name/color',
+            alert_enter_sole: 'Please enter sole model', alert_enter_upper: 'Please enter upper model', alert_enter_plastic_sole: 'Please enter sole model', alert_enter_plastic_upper: 'Please enter upper model',
+            alert_select_sole: 'Please select sole material', alert_select_upper: 'Please select upper material', alert_enter_qty: 'Please enter quantity', alert_keep_one_color: 'Keep at least one color',
+            selected_prefix: 'Selected', available: 'Available', color_name_placeholder: 'Color Name', submitting: 'Submitting...',
+            alert_upload_failed: 'Upload failed, please retry', alert_file_too_large: 'Image cannot exceed 10MB'
+        }
+    };
+    Object.assign(I18N.zh, pageI18N.zh); Object.assign(I18N.en, pageI18N.en);
+    if (window.updatePageTexts) window.updatePageTexts(currentLang);
+
+    function updateSelects() {
+        document.querySelectorAll('[data-i18n-options]').forEach(select => {
+            const keys = select.getAttribute('data-i18n-options').split(',');
+            select.querySelectorAll('option').forEach((opt, idx) => { 
+                if (keys[idx] && I18N[currentLang] && I18N[currentLang][keys[idx]]) 
+                    opt.textContent = I18N[currentLang][keys[idx]]; 
+            });
+        });
+    }
+    updateSelects();
+    const originalApply = window.applyLanguage;
+    window.applyLanguage = function(lang) { originalApply(lang); updateSelects(); };
+
+    let colorCounter = 0;
+    const container = document.getElementById('colorsContainer');
+    const uploadedUrls = [];
+    const imageContainer = document.getElementById('imageUploadContainer');
+    const fileInput = document.getElementById('imageUploadInput');
+    const urlsInput = document.getElementById('imageUrlsInput');
+    let searchTimer, abortController = null;
+    let currentSearchType = null;
+    let currentSearchBtn = null;
+    const modal = document.getElementById('materialModal');
+    const searchInput = document.getElementById('materialSearchInput');
+    const resultsDiv = document.getElementById('materialSearchResults');
+
+    function createColorRow(rowIndex) {
+        const div = document.createElement('div');
+        div.className = 'color-row-mobile';
+        div.dataset.rowIndex = rowIndex;
+
+        let html = `<div style="display:flex; gap:0.5rem; margin-bottom:0.8rem;">
+            <input type="text" name="color_name[]" placeholder="${I18N[currentLang]?.color_name_placeholder || '颜色名称'}" required style="flex:1;">
+            <button type="button" class="remove-color-btn">✕</button>
+        </div>`;
+        html += `<div style="display:grid; grid-template-columns:repeat(3,1fr); gap:0.5rem;">`;
+        for (let i = 1; i <= 6; i++) {
+            html += `<div>
+                <label style="font-size:0.7rem;color:#64748b;">码段${i}</label>
+                <input type="number" class="size-segment-input" name="size_${i}_${rowIndex}" data-seg-index="${i-1}" data-seg-num="${i}" min="0" value="" placeholder="0" step="1">
+            </div>`;
+        }
+        html += '</div>';
+        div.innerHTML = html;
+
+        div.querySelector('.remove-color-btn').addEventListener('click', function() {
+            if (document.querySelectorAll('.color-row-mobile').length <= 1) {
+                alert(I18N[currentLang]?.alert_keep_one_color || '至少保留一个颜色');
+                return;
+            }
+            div.remove();
+            reindexAllRows();
+        });
+        return div;
+    }
+
+    function reindexAllRows() {
+        const rows = document.querySelectorAll('.color-row-mobile');
+        rows.forEach((row, idx) => {
+            row.dataset.rowIndex = idx;
+            const nameInput = row.querySelector('input[name^="color_name"]');
+            if (nameInput) nameInput.name = 'color_name[]';
+            // 使用固定class选择码段输入框，按data-seg-num排序后重命名
+            const inputs = Array.from(row.querySelectorAll('.size-segment-input'));
+            inputs.sort((a, b) => parseInt(a.dataset.segNum) - parseInt(b.dataset.segNum));
+            inputs.forEach((input, i) => {
+                input.name = `size_${i+1}_${idx}`;
+                // 恢复正确的segIndex
+                input.dataset.segIndex = i;
+            });
+        });
+        colorCounter = rows.length;
+    }
+
+    container.appendChild(createColorRow(0));
+    colorCounter = 1;
+
+    document.getElementById('addColorBtn').onclick = () => {
+        const newIndex = document.querySelectorAll('.color-row-mobile').length;
+        container.appendChild(createColorRow(newIndex));
+        reindexAllRows();
+    };
+
+    window.switchOrderType = function(type) {
+        document.getElementById('orderTypeInput').value = type;
+        const select = document.getElementById('orderTypeSelect');
+        if (select) select.value = type;
+
+        const pc = document.getElementById('productCodeWrapper');
+        const sole = document.getElementById('soleModelWrapper');
+        const upper = document.getElementById('upperModelWrapper');
+        const direct = document.getElementById('directSaleWrapper');
+        const plastic = document.getElementById('plasticTypeWrapper');
+        const ass = document.getElementById('assemblySourcesWrapper');
+
+        pc.style.display = 'none'; sole.style.display = 'none'; upper.style.display = 'none';
+        direct.style.display = 'none'; plastic.style.display = 'none'; ass.style.display = 'none';
+
+        document.getElementById('productCode').required = false;
+        document.getElementById('soleModel').required = false;
+        document.getElementById('upperModel').required = false;
+
+        if (type === 'blow') {
+            sole.style.display = 'block'; direct.style.display = 'block';
+            document.getElementById('soleModel').required = true;
+        } else if (type === 'pu') {
+            sole.style.display = 'block'; direct.style.display = 'block';
+            document.getElementById('soleModel').required = true;
+        } else if (type === 'plastic') {
+            plastic.style.display = 'block'; togglePlasticModel();
+        } else if (type === 'assembly') {
+            pc.style.display = 'block'; document.getElementById('productCode').required = true;
+            sole.style.display = 'block'; upper.style.display = 'block'; ass.style.display = 'block';
+            document.getElementById('soleModel').required = true; document.getElementById('upperModel').required = true;
+            onSoleSourceChange(); onUpperSourceChange();
+            if (!document.getElementById('otherSourcesContainer').children.length) addOtherSourceRow();
+        }
+    };
+
+    window.togglePlasticModel = function() {
+        const type = document.getElementById('plasticTypeSelect').value;
+        document.getElementById('soleModelWrapper').style.display = type === 'sole' ? 'block' : 'none';
+        document.getElementById('upperModelWrapper').style.display = type === 'upper' ? 'block' : 'none';
+        document.getElementById('soleModel').required = type === 'sole';
+        document.getElementById('upperModel').required = type === 'upper';
+    };
+
+    window.onSoleSourceChange = function() {
+        const src = document.getElementById('soleSource').value;
+        const btn = document.getElementById('selectSoleBtn');
+        btn.style.display = src === 'other' ? 'none' : 'block';
+        btn.innerHTML = src === 'domestic' ? '🔍 ' + I18N[currentLang].sole_domestic : '🔍 ' + I18N[currentLang].select_material;
+        document.getElementById('soleMaterialInfo').style.display = 'none';
+        document.getElementById('soleMaterialIdHidden').value = '';
+    };
+
+    window.onUpperSourceChange = function() {
+        const src = document.getElementById('upperSource').value;
+        const btn = document.getElementById('selectUpperBtn');
+        btn.style.display = src === 'other' ? 'none' : 'block';
+        btn.innerHTML = src === 'domestic' ? '🔍 ' + I18N[currentLang].upper_domestic : '🔍 ' + I18N[currentLang].select_material;
+        document.getElementById('upperMaterialInfo').style.display = 'none';
+        document.getElementById('upperMaterialIdHidden').value = '';
+    };
+
+    function createOtherSourceRow() {
+        const div = document.createElement('div');
+        div.className = 'other-source-row';
+        div.innerHTML = `<div style="display:flex; gap:0.5rem; align-items:center;">
+            <select name="other_source[]" class="other-source-select" style="flex:2;" onchange="onOtherSourceChange(this)">
+                <option value="local">${I18N[currentLang].sole_local_blow?.replace('吹气','生产') || '本地生产'}</option>
+                <option value="domestic">${I18N[currentLang].sole_domestic || '国内鞋材'}</option>
+                <option value="other">🔧 ${I18N[currentLang].sole_other?.replace('🔧 ','') || '其他'}</option>
+            </select>
+            <button type="button" class="btn-outline select-other-btn" style="flex:1; display:none;" onclick="searchMaterial('other', this)">🔍 ${I18N[currentLang].select_material}</button>
+            <button type="button" class="remove-other-btn" onclick="this.closest('.other-source-row').remove()">✕</button>
+        </div>
+        <div class="other-material-info" style="display:none;"></div>
+        <input type="hidden" name="other_material_id[]" class="other-material-id">`;
+        const sel = div.querySelector('.other-source-select');
+        const btn = div.querySelector('.select-other-btn');
+        btn.style.display = sel.value === 'other' ? 'none' : 'inline-block';
+        return div;
+    }
+
+    window.addOtherSourceRow = function() {
+        document.getElementById('otherSourcesContainer').appendChild(createOtherSourceRow());
+    };
+
+    window.onOtherSourceChange = function(sel) {
+        const row = sel.closest('.other-source-row');
+        const btn = row.querySelector('.select-other-btn');
+        btn.style.display = sel.value === 'other' ? 'none' : 'inline-block';
+    };
+
+    window.searchMaterial = function(type, btn) {
+        currentSearchType = type;
+        currentSearchBtn = btn;
+        modal.style.display = 'block';
+        document.body.style.overflow = 'hidden';
+        searchInput.value = '';
+        performSearch('');
+    };
+
+    async function performSearch(q) {
+        if (abortController) abortController.abort();
+        abortController = new AbortController();
+        let invType = '';
+        if (currentSearchType === 'sole') {
+            const src = document.getElementById('soleSource').value;
+            invType = src === 'domestic' ? 'domestic' : 'paint_sole';
+        } else if (currentSearchType === 'upper') {
+            const src = document.getElementById('upperSource').value;
+            invType = src === 'domestic' ? 'domestic' : 'plastic_upper';
+        } else if (currentSearchType === 'other') {
+            const row = currentSearchBtn.closest('.other-source-row');
+            const src = row.querySelector('.other-source-select').value;
+            invType = src === 'domestic' ? 'domestic' : 'blow_sole';
+        }
+        const url = `/api/inventory/search?q=${encodeURIComponent(q)}&type=${invType}`;
+        try {
+            const r = await fetch(url, { signal: abortController.signal });
+            const d = await r.json();
+            resultsDiv.innerHTML = d.map(m => `<div style="padding:0.8rem; border-radius:12px; margin-bottom:0.5rem; background:white; border:1px solid #e5e7eb;" onclick="selectMaterial(${m.id},'${m.product_code}','${m.material_name}','${m.color}')"><strong>${m.product_code}</strong><div style="font-size:0.85rem;color:#64748b;">${m.material_name}</div><div style="font-size:0.8rem;color:#94a3b8;">${m.color} · ${I18N[currentLang].available}: ${m.total}${m.unit}</div></div>`).join('');
+        } catch (err) {
+            if (err.name !== 'AbortError') resultsDiv.innerHTML = '<p>加载失败</p>';
+        }
+    }
+
+    searchInput.addEventListener('input', e => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => performSearch(e.target.value), 300);
+    });
+
+    window.selectMaterial = function(id, code, name, color) {
+        if (currentSearchType === 'sole') {
+            document.getElementById('soleMaterialIdHidden').value = id;
+            document.getElementById('soleMaterialInfo').innerHTML = `✅ ${I18N[currentLang].selected_prefix}：${code} - ${name}`;
+            document.getElementById('soleMaterialInfo').style.display = 'block';
+        } else if (currentSearchType === 'upper') {
+            document.getElementById('upperMaterialIdHidden').value = id;
+            document.getElementById('upperMaterialInfo').innerHTML = `✅ ${I18N[currentLang].selected_prefix}：${code} - ${name}`;
+            document.getElementById('upperMaterialInfo').style.display = 'block';
+        } else if (currentSearchType === 'other') {
+            const row = currentSearchBtn.closest('.other-source-row');
+            row.querySelector('.other-material-id').value = id;
+            row.querySelector('.other-material-info').innerHTML = `✅ ${I18N[currentLang].selected_prefix}：${code} - ${name}`;
+            row.querySelector('.other-material-info').style.display = 'block';
+        }
+        closeModal();
+    };
+
+    window.closeModal = function() {
+        modal.style.display = 'none';
+        document.body.style.overflow = '';
+    };
+
+    async function compressImage(file, maxWidth = 1920, quality = 0.85) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let width = img.width, height = img.height;
+                    if (width > maxWidth) { height = (height * maxWidth) / width; width = maxWidth; }
+                    canvas.width = width; canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    canvas.toBlob((blob) => {
+                        if (blob) resolve(new File([blob], file.name, { type: 'image/jpeg' }));
+                        else reject(new Error('压缩失败'));
+                    }, 'image/jpeg', quality);
+                };
+                img.onerror = reject;
+                img.src = e.target.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
+    fileInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files);
+        for (const file of files) {
+            if (file.size > 10 * 1024 * 1024) { alert(I18N[currentLang].alert_file_too_large); continue; }
+            try {
+                const compressedFile = await compressImage(file, 1920, 0.85);
+                const formData = new FormData();
+                formData.append('file', compressedFile);
+                const resp = await fetch('/api/upload_order_image', {
+                    method: 'POST',
+                    headers: { 'X-CSRFToken': document.querySelector('meta[name="csrf-token"]').getAttribute('content') },
+                    body: formData
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    uploadedUrls.push(data.url);
+                    addImagePreview(data.url);
+                    urlsInput.value = JSON.stringify(uploadedUrls);
+                } else {
+                    alert(I18N[currentLang].alert_upload_failed + ': ' + data.error);
+                }
+            } catch (err) {
+                alert(I18N[currentLang].alert_upload_failed);
+            }
+        }
+        fileInput.value = '';
+    });
+
+    function addImagePreview(url) {
+        const div = document.createElement('div');
+        div.style.cssText = 'position: relative; width: 80px; height: 80px; border-radius: 12px; overflow: hidden; border: 1px solid #e2e8f0;';
+        div.innerHTML = `<img src="${url}" loading="lazy" onerror="this.style.display='none'" style="width: 100%; height: 100%; object-fit: cover;"><button type="button" style="position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.6); color: white; border: none; border-radius: 20px; width: 22px; height: 22px; font-size: 12px; cursor: pointer;" onclick="removeImage(this, '${url}')">✕</button>`;
+        imageContainer.appendChild(div);
+    }
+
+    window.removeImage = function(btn, url) {
+        const index = uploadedUrls.indexOf(url);
+        if (index > -1) uploadedUrls.splice(index, 1);
+        urlsInput.value = JSON.stringify(uploadedUrls);
+        btn.closest('div').remove();
+    };
+
+    const typeSelect = document.getElementById('orderTypeSelect');
+    typeSelect.addEventListener('change', function() { switchOrderType(this.value); });
+
+    document.getElementById('orderForm').onsubmit = function(e) {
+        reindexAllRows();
+        document.querySelectorAll('.size-segment-input').forEach(i => { if (!i.value) i.value = '0'; });
+
+        document.querySelectorAll('input[type="number"]').forEach(input => {
+            if (input.value === '' || input.value === null) input.value = 0;
+        });
+
+        let start = parseInt(document.getElementById('globalSizeStart').value) || 37;
+        let end = parseInt(document.getElementById('globalSizeEnd').value) || 42;
+        if (start > end) { let tmp = start; start = end; end = tmp; }
+        document.getElementById('globalSizeStartHidden').value = start;
+        document.getElementById('globalSizeEndHidden').value = end;
+
+        let hasQty = false;
+        let totalPairs = 0;
+        // 使用固定class精确读取码段数据，不受其他number输入框干扰
+        document.querySelectorAll('.color-row-mobile input.size-segment-input').forEach(i => {
+            const segNum = parseInt(i.dataset.segNum);
+            if (segNum >= 1 && segNum <= 6) {
+                const val = parseInt(i.value) || 0;
+                if (val > 0) hasQty = true;
+                totalPairs += val;
+            }
+        });
+        if (!hasQty) {
+            alert(I18N[currentLang].alert_enter_qty);
+            e.preventDefault();
+            return;
+        }
+
+        const orderType = document.getElementById('orderTypeInput').value;
+        if (orderType === 'assembly') {
+            if (document.getElementById('soleSource').value !== 'other' && !document.getElementById('soleMaterialIdHidden').value) {
+                alert(I18N[currentLang].alert_select_sole); e.preventDefault(); return;
+            }
+            if (document.getElementById('upperSource').value !== 'other' && !document.getElementById('upperMaterialIdHidden').value) {
+                alert(I18N[currentLang].alert_select_upper); e.preventDefault(); return;
+            }
+        }
+
+        const btn = document.getElementById('submitBtn');
+        btn.disabled = true;
+        btn.innerHTML = `<span data-i18n="submitting">${I18N[currentLang].submitting}</span>`;
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '🚀 <span data-i18n="btn_create">创建指令单</span>';
+        }, 3000);
+    };
+
+    window.onload = function() {
+        switchOrderType('{{ order_type }}');
+        document.getElementById('globalSizeStartHidden').value = document.getElementById('globalSizeStart').value;
+        document.getElementById('globalSizeEndHidden').value = document.getElementById('globalSizeEnd').value;
+    };
+</script>
+{% endblock %}

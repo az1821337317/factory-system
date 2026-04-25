@@ -1,0 +1,121 @@
+{% extends "base_mobile.html" %}
+{% block title %}{% endblock %}
+{% block content %}
+<div style="margin-bottom:1rem;">
+    <h1>📋 <span data-i18n="page_title">生产指令单</span></h1>
+    <p style="color:#64748b;font-size:0.85rem;" data-i18n="page_subtitle">查看和管理所有生产单</p>
+</div>
+
+<!-- 分类下拉选择器 -->
+<div class="card" style="padding: 0.8rem 1.2rem;">
+    <select id="orderFilterSelect" style="font-weight:500;" data-i18n-options="filter_assembly,filter_sole,filter_upper,filter_all">
+        <option value="assembly">📦 成品（成型）</option>
+        <option value="sole">👟 鞋底（吹气/PU）</option>
+        <option value="upper">🧵 帮面（滴塑）</option>
+        <option value="all" selected>📋 全部指令单</option>
+    </select>
+</div>
+
+<!-- 搜索栏 -->
+<div class="card" style="padding: 1rem;">
+    <form method="get" style="display: flex; gap: 0.5rem;">
+        <input type="text" name="search" placeholder="搜索单号/货号/型号" value="{{ search }}" style="flex: 1; margin-bottom: 0;">
+        <button type="submit" class="btn-secondary" style="width: auto; padding: 0 1.5rem;">🔍</button>
+        {% if search %}<a href="{{ url_for('index') }}" class="btn-outline" style="width: auto;">重置</a>{% endif %}
+    </form>
+</div>
+
+<div id="orderListContainer">
+    {% for order in orders %}
+    <div class="card order-card" data-type="{{ order[7] }}" style="padding:1rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
+            <strong style="font-size:1.2rem;">{{ order[1] }}</strong>
+            {% set type_names = {'blow':'🔥 吹气','pu':'💧 PU','plastic':'🧪 滴塑','assembly':'📦 成型'} %}
+            <span style="background:#eef2ff; padding:0.25rem 0.9rem; border-radius:30px; font-size:0.7rem; font-weight:600;">
+                {{ type_names.get(order[7], order[7]) }}
+            </span>
+        </div>
+        <div style="color:#475569; margin-bottom:0.3rem;"><span data-i18n="label_product_code">货号</span>: {{ order[2] }}</div>
+        <div style="color:#475569;"><span data-i18n="label_sole">鞋底</span>: {{ order[3] or '-' }} | <span data-i18n="label_upper">帮面</span>: {{ order[4] or '-' }}</div>
+        <div style="color:#64748b; font-size:0.85rem; margin:0.5rem 0;"><span data-i18n="label_created_date">开单</span>: {{ order[5] }}</div>
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+            <span class="status-badge {% if order[6] == 'pending' %}status-pending{% elif order[6] == 'partial' %}status-partial{% else %}status-completed{% endif %}">
+                {% if order[6] == 'pending' %}<span data-i18n="status_pending">待生产</span>
+                {% elif order[6] == 'partial' %}<span data-i18n="status_partial">部分完成</span>
+                {% else %}<span data-i18n="status_completed">已完成</span>{% endif %}
+            </span>
+            <div style="display:flex; gap:0.6rem;">
+                <a href="{{ url_for('order_detail', order_id=order[0]) }}" class="btn-outline" style="padding:0.5rem 1.2rem;" data-i18n="btn_view">查看</a>
+                <form method="post" action="{{ url_for('delete_order', order_id=order[0]) }}" style="display:inline;" onsubmit="return confirm(window.I18N[window.currentLang].confirm_delete || '确定删除？')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button type="submit" class="btn-danger" style="padding:0.5rem 1.2rem;" data-i18n="btn_delete">删除</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="card" style="text-align:center; color:#94a3b8; padding:3rem;" data-i18n="no_orders">暂无指令单</div>
+    {% endfor %}
+</div>
+
+<script>
+    const pageI18N = {
+        zh: {
+            page_title: '生产指令单',
+            page_subtitle: '查看和管理所有生产单',
+            filter_assembly: '📦 成品（成型）',
+            filter_sole: '👟 鞋底（吹气/PU）',
+            filter_upper: '🧵 帮面（滴塑）',
+            filter_all: '📋 全部指令单',
+            label_product_code: '货号',
+            label_sole: '鞋底',
+            label_upper: '帮面',
+            label_created_date: '开单',
+            status_pending: '待生产',
+            status_partial: '部分完成',
+            status_completed: '已完成',
+            btn_view: '查看',
+            btn_delete: '删除',
+            confirm_delete: '确定删除该指令单吗？',
+            no_orders: '暂无指令单'
+        },
+        en: {
+            page_title: 'Production Orders',
+            page_subtitle: 'View and manage all production orders',
+            filter_assembly: '📦 Finished (Assembly)',
+            filter_sole: '👟 Soles (Blow/PU)',
+            filter_upper: '🧵 Uppers (Plastic)',
+            filter_all: '📋 All Orders',
+            label_product_code: 'Product Code',
+            label_sole: 'Sole',
+            label_upper: 'Upper',
+            label_created_date: 'Created',
+            status_pending: 'Pending',
+            status_partial: 'Partial',
+            status_completed: 'Completed',
+            btn_view: 'View',
+            btn_delete: 'Delete',
+            confirm_delete: 'Are you sure you want to delete this order?',
+            no_orders: 'No orders found'
+        }
+    };
+
+    Object.assign(I18N.zh, pageI18N.zh);
+    Object.assign(I18N.en, pageI18N.en);
+    if (window.updatePageTexts) window.updatePageTexts(currentLang);
+
+    const filterSelect = document.getElementById('orderFilterSelect');
+    filterSelect.addEventListener('change', function() {
+        const filter = this.value;
+        document.querySelectorAll('.order-card').forEach(card => {
+            const type = card.dataset.type;
+            if (filter === 'all') card.style.display = '';
+            else if (filter === 'sole') card.style.display = (type === 'blow' || type === 'pu') ? '' : 'none';
+            else if (filter === 'upper') card.style.display = (type === 'plastic') ? '' : 'none';
+            else card.style.display = (type === filter) ? '' : 'none';
+        });
+    });
+    filterSelect.value = 'all';
+    filterSelect.dispatchEvent(new Event('change'));
+</script>
+{% endblock %}

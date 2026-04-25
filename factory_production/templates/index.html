@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}指令单列表{% endblock %}
+{% block content %}
+<h1 class="page-title">📋 生产指令单</h1>
+
+<!-- 分类标签 + 搜索框 -->
+<div class="card" style="padding: 1rem 1.5rem; margin-bottom: 1.5rem;">
+    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+        <button class="index-tab active" data-filter="assembly">📦 成品 (成型)</button>
+        <button class="index-tab" data-filter="sole">👟 鞋底 (吹气/PU)</button>
+        <button class="index-tab" data-filter="upper">🧵 帮面 (滴塑)</button>
+        <button class="index-tab" data-filter="all">📋 全部</button>
+        <form method="get" style="display: flex; gap: 0.5rem; margin-left: auto;">
+            <input type="text" name="search" placeholder="搜索单号/货号/型号" value="{{ search }}" style="width: 220px; padding: 0.7rem 1.2rem; border-radius: 30px;">
+            <button type="submit" class="btn-secondary">🔍 搜索</button>
+            {% if search %}<a href="{{ url_for('index') }}" class="btn-outline">重置</a>{% endif %}
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="table-wrapper">
+        <table id="orderTable">
+            <thead>
+                <tr>
+                    <th>生产单号</th>
+                    <th>货号</th>
+                    <th>类型</th>
+                    <th>鞋底/帮面</th>
+                    <th>开单日期</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for order in orders %}
+                <tr data-type="{{ order[7] }}">
+                    <td><strong>{{ order[1] }}</strong></td>
+                    <td>{{ order[2] }}</td>
+                    <td>
+                        {% set type_names = {'blow':'🔥 吹气','pu':'💧 PU','plastic':'🧪 滴塑','assembly':'📦 成型'} %}
+                        <span style="background:#eef2ff; padding:0.2rem 0.8rem; border-radius:30px; font-size:0.75rem; font-weight:600;">
+                            {{ type_names.get(order[7], order[7]) }}
+                        </span>
+                    </td>
+                    <td>{{ order[3] or '-' }} / {{ order[4] or '-' }}</td>
+                    <td>{{ order[5] }}</td>
+                    <td>
+                        {% if order[6] == 'pending' %}
+                            <span class="status-badge status-pending">待生产</span>
+                        {% elif order[6] == 'partial' %}
+                            <span class="status-badge status-partial">部分完成</span>
+                        {% elif order[6] == 'completed' %}
+                            <span class="status-badge status-completed">已完成</span>
+                        {% else %}
+                            {{ order[6] }}
+                        {% endif %}
+                    </td>
+                    <td>
+                        <a href="{{ url_for('order_detail', order_id=order[0]) }}" class="btn btn-secondary btn-small">查看</a>
+                        <form method="post" action="{{ url_for('delete_order', order_id=order[0]) }}" style="display:inline;" onsubmit="return confirm('确定删除该指令单吗？')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn btn-danger btn-sm">删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" style="text-align: center; color: #94a3b8;">暂无生产指令单</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+    .index-tab {
+        background: white; border: 1.5px solid #cbd5e1; color: #334155;
+        padding: 0.6rem 1.5rem; border-radius: 40px; font-weight: 600; cursor: pointer;
+        transition: all 0.2s; font-size: 0.95rem;
+    }
+    .index-tab.active { background: #2563eb; border-color: #2563eb; color: white; }
+    .index-tab:hover { background: #f1f5f9; }
+    .btn-sm { padding: 0.35rem 1rem !important; font-size: 0.85rem !important; margin-right: 0.5rem; }
+</style>
+
+<script>
+    document.querySelectorAll('.index-tab').forEach(btn => {
+        btn.addEventListener('click', function() {
+            document.querySelectorAll('.index-tab').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            const filter = this.dataset.filter;
+            document.querySelectorAll('#orderTable tbody tr').forEach(row => {
+                const type = row.dataset.type;
+                if (!type) return;
+                if (filter === 'all') row.style.display = '';
+                else if (filter === 'sole') row.style.display = (type === 'blow' || type === 'pu') ? '' : 'none';
+                else if (filter === 'upper') row.style.display = (type === 'plastic') ? '' : 'none';
+                else row.style.display = (type === filter) ? '' : 'none';
+            });
+        });
+    });
+    document.querySelector('[data-filter="assembly"]').click();
+</script>
+{% endblock %}

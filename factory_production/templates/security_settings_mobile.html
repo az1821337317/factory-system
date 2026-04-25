@@ -1,0 +1,88 @@
+{% extends "base_mobile.html" %}
+{% block title %}{% endblock %}
+{% block content %}
+<div style="margin-bottom:1rem;">
+    <h1>🔐 <span data-i18n="page_title">安全设置</span></h1>
+    <p style="color:#64748b;font-size:0.85rem;" data-i18n="page_subtitle">修改用户名或密码</p>
+</div>
+
+<form method="post" id="securityForm">
+    <div class="card" style="padding: 1.5rem;">
+        <div style="margin-bottom: 1.5rem;">
+            <label style="font-weight: 600; margin-bottom: 0.4rem; display: block;" data-i18n="label_new_username">新用户名</label>
+            <input type="text" name="new_username" value="{{ current_user.username }}" required style="width: 100%; padding: 0.9rem; border-radius: 30px; border: 1.5px solid #e2e8f0; font-size: 1rem;">
+            <div style="font-size: 0.8rem; color: #64748b; margin-top: 0.3rem;" data-i18n="username_hint">修改后需重新登录</div>
+        </div>
+
+        <hr style="margin: 1.5rem 0; border: none; border-top: 1px solid #e2e8f0;">
+
+        <div style="margin-bottom: 1.2rem;">
+            <label style="font-weight: 600; margin-bottom: 0.4rem; display: block;" data-i18n="label_old_password">原密码</label>
+            <input type="password" name="old_password" placeholder="" data-i18n-placeholder="old_password_placeholder" style="width: 100%; padding: 0.9rem; border-radius: 30px; border: 1.5px solid #e2e8f0; font-size: 1rem;">
+        </div>
+        <div style="margin-bottom: 1.2rem;">
+            <label style="font-weight: 600; margin-bottom: 0.4rem; display: block;" data-i18n="label_new_password">新密码</label>
+            <input type="password" name="new_password" placeholder="" data-i18n-placeholder="new_password_placeholder" style="width: 100%; padding: 0.9rem; border-radius: 30px; border: 1.5px solid #e2e8f0; font-size: 1rem;">
+        </div>
+        <div style="margin-bottom: 1.5rem;">
+            <label style="font-weight: 600; margin-bottom: 0.4rem; display: block;" data-i18n="label_confirm_password">确认新密码</label>
+            <input type="password" name="confirm_password" placeholder="" data-i18n-placeholder="confirm_password_placeholder" style="width: 100%; padding: 0.9rem; border-radius: 30px; border: 1.5px solid #e2e8f0; font-size: 1rem;">
+        </div>
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div style="display: flex; gap: 1rem;">
+            <a href="{{ url_for('index') }}" class="btn-outline" style="flex: 1; text-align: center; padding: 1rem; border-radius: 40px; font-weight: 600; text-decoration: none;" data-i18n="btn_cancel">取消</a>
+            <button type="submit" class="btn btn-success" id="submitBtn" style="flex: 1; padding: 1rem; border-radius: 40px; font-weight: 600; background: #10b981; color: white; border: none;" data-i18n="btn_save">保存设置</button>
+        </div>
+    </div>
+</form>
+
+<script>
+    const pageI18N = {
+        zh: {
+            page_title: '安全设置',
+            page_subtitle: '修改用户名或密码',
+            label_new_username: '新用户名',
+            username_hint: '修改后需重新登录',
+            label_old_password: '原密码',
+            old_password_placeholder: '如需修改密码请输入原密码',
+            label_new_password: '新密码',
+            new_password_placeholder: '留空则不修改',
+            label_confirm_password: '确认新密码',
+            confirm_password_placeholder: '再次输入新密码',
+            btn_cancel: '取消',
+            btn_save: '保存设置',
+            submitting: '保存中...'
+        },
+        en: {
+            page_title: 'Security Settings',
+            page_subtitle: 'Change username or password',
+            label_new_username: 'New Username',
+            username_hint: 'You will be logged out after change',
+            label_old_password: 'Current Password',
+            old_password_placeholder: 'Enter current password to change',
+            label_new_password: 'New Password',
+            new_password_placeholder: 'Leave blank to keep unchanged',
+            label_confirm_password: 'Confirm New Password',
+            confirm_password_placeholder: 'Re-enter new password',
+            btn_cancel: 'Cancel',
+            btn_save: 'Save Settings',
+            submitting: 'Saving...'
+        }
+    };
+    Object.assign(I18N.zh, pageI18N.zh);
+    Object.assign(I18N.en, pageI18N.en);
+    if (window.updatePageTexts) window.updatePageTexts(currentLang);
+
+    document.getElementById('securityForm').addEventListener('submit', function() {
+        const btn = document.getElementById('submitBtn');
+        btn.disabled = true;
+        const span = btn.querySelector('span');
+        if (span) {
+            span.setAttribute('data-i18n', 'submitting');
+            span.textContent = I18N[currentLang].submitting;
+        } else {
+            btn.textContent = I18N[currentLang].submitting;
+        }
+    });
+</script>
+{% endblock %}

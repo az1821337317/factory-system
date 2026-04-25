@@ -1,0 +1,456 @@
+{% extends "base.html" %}
+{% block title %}库存管理{% endblock %}
+{% block content %}
+<h1 class="page-title">📦 库存管理</h1>
+
+<!-- 库存类型标签页 -->
+<div class="card" style="padding: 1rem 1.5rem; margin-bottom: 1.5rem;">
+    <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <a href="{{ url_for('inventory_list', type='blow_sole') }}" class="inventory-tab {{ 'active' if inventory_type == 'blow_sole' }}">🔥 吹气鞋底</a>
+        <a href="{{ url_for('inventory_list', type='pu_sole') }}" class="inventory-tab {{ 'active' if inventory_type == 'pu_sole' }}">💧 PU鞋底</a>
+        <a href="{{ url_for('inventory_list', type='paint_sole') }}" class="inventory-tab {{ 'active' if inventory_type == 'paint_sole' }}">🎨 喷漆鞋底</a>
+        <a href="{{ url_for('inventory_list', type='plastic_upper') }}" class="inventory-tab {{ 'active' if inventory_type == 'plastic_upper' }}">🧪 滴塑帮面</a>
+        <a href="{{ url_for('inventory_list', type='domestic') }}" class="inventory-tab {{ 'active' if inventory_type == 'domestic' }}">🌏 国内鞋材</a>
+    </div>
+</div>
+
+<div class="card">
+    <!-- 筛选栏 + 操作按钮 -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.8rem; flex-wrap: wrap; gap: 1rem;">
+        <form method="get" style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+            <input type="hidden" name="type" value="{{ inventory_type }}">
+            <input type="text" name="search" placeholder="搜索货号/名称/颜色" value="{{ search }}" style="width: 220px; padding: 0.7rem 1.2rem; border-radius: 30px;">
+            <button type="submit" class="btn-secondary" style="padding: 0.7rem 1.5rem; border-radius: 30px;">🔍 筛选</button>
+            <a href="{{ url_for('inventory_list', type=inventory_type) }}" class="btn-outline" style="padding: 0.7rem 1.5rem; border-radius: 30px;">重置</a>
+        </form>
+        <div style="display: flex; gap: 0.8rem;">
+            <button class="btn btn-success" onclick="openBatchModal()" style="padding: 0.7rem 1.8rem; border-radius: 30px;">📋 批量入库</button>
+            <button class="btn-outline" onclick="openSingleAddModal()" style="padding: 0.7rem 1.8rem; border-radius: 30px;">➕ 单件入库</button>
+        </div>
+    </div>
+
+    <!-- 库存列表 -->
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>货号</th>
+                    <th>材料名称</th>
+                    <th>颜色</th>
+                    <th>码段数量</th>
+                    <th>总库存</th>
+                    <th>更新时间</th>
+                    <th>操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for m in materials %}
+                <tr>
+                    <td><strong>{{ m.product_code }}</strong></td>
+                    <td>{{ m.material_name }}</td>
+                    <td>{{ m.color }}</td>
+                    <td>
+                        <div style="font-size: 0.8rem; color: #64748b; margin-bottom: 0.4rem;">范围: {{ m.size_start|default(37) }}~{{ m.size_end|default(42) }}</div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.8rem;">
+                            {% for size, qty in m.size_items %}
+                            <div style="display: flex; flex-direction: column; align-items: center; min-width: 45px;">
+                                <span style="font-weight: 600; font-size: 0.85rem; color: #1e293b;">{{ size }}</span>
+                                <span style="font-size: 0.9rem; font-weight: 500;">{{ qty }}</span>
+                            </div>
+                            {% else %}
+                            <span style="color: #94a3b8;">-</span>
+                            {% endfor %}
+                        </div>
+                    </td>
+                    <td><strong>{{ m.total|int }} {{ m.unit }}</strong></td>
+                    <td>{{ m.updated_at[:10] if m.updated_at else '-' }}</td>
+                    <td>
+                        <button class="btn-edit" onclick="editMaterial({{ m.id }}, '{{ m.product_code }}', '{{ m.material_name }}', '{{ m.color }}', '{{ m.notes|default('') }}')">✏️ 编辑</button>
+                        <form method="post" action="{{ url_for('inventory_delete', id=m.id) }}" style="display:inline;" onsubmit="return confirm('确定删除该库存记录吗？')">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="submit" class="btn-delete">🗑️ 删除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="7" style="text-align: center; color: #94a3b8; padding: 2rem;">暂无库存记录</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- 批量入库模态框 -->
+<div id="batchModal" class="modal">
+    <div class="modal-content" style="max-width: 800px;">
+        <h3 style="margin-bottom: 1.5rem;">📋 批量入库 - {{ type_names.get(inventory_type, '') }}</h3>
+
+        <!-- 码段范围配置 -->
+        <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1rem; padding: 0.8rem; background: #f0f9ff; border-radius: 12px; border: 1px solid #bae6fd;">
+            <label style="font-weight: 600; color: #0369a1; white-space: nowrap;">📏 码段范围:</label>
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <input type="number" id="batchSizeStart" value="37" min="1" max="99" style="width: 60px; padding: 0.4rem; border-radius: 8px; border: 1.5px solid #bae6fd; text-align: center;">
+                <span style="color: #64748b;">~</span>
+                <input type="number" id="batchSizeEnd" value="42" min="1" max="99" style="width: 60px; padding: 0.4rem; border-radius: 8px; border: 1.5px solid #bae6fd; text-align: center;">
+            </div>
+            <span style="font-size: 0.8rem; color: #64748b;">（共 <span id="segCount">6</span> 个码段）</span>
+        </div>
+
+        <!-- 文件上传区域 -->
+        <div style="background: #f8fafc; border-radius: 12px; padding: 1.2rem; margin-bottom: 1rem; border: 1px solid #e2e8f0;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem;">
+                <span style="font-weight: 600; color: #334155;">🗂️ 方式一：上传文件（推荐）</span>
+                <a href="/api/inventory/download_template?size_start=37&size_end=42" id="downloadTemplateLink" class="btn btn-sm btn-outline" style="font-size: 0.85rem;">
+                    ⬇️ 下载模板
+                </a>
+            </div>
+            <p style="margin-bottom: 0.8rem; color: #64748b; font-size: 0.85rem;">
+                先下载模板 → 在 Excel 中填好数据 → 另存为 CSV(UTF-8) 格式 → 上传文件
+            </p>
+            <input type="file" id="batchFile" accept=".csv" style="display: none;" onchange="handleFileUpload(this)">
+            <div id="fileUploadArea" onclick="document.getElementById('batchFile').click()"
+                 style="border: 2px dashed #cbd5e1; border-radius: 12px; padding: 1.5rem; text-align: center; cursor: pointer; transition: all 0.2s;">
+                <div style="font-size: 2rem; margin-bottom: 0.5rem;">📤</div>
+                <div style="color: #64748b; font-size: 0.9rem;">点击选择 CSV 文件，或拖拽文件到此处</div>
+                <div id="fileNameDisplay" style="margin-top: 0.5rem; color: #3b82f6; font-weight: 500; display: none;"></div>
+            </div>
+        </div>
+
+        <!-- 粘贴方式 -->
+        <div style="text-align: center; margin: 0.8rem 0; position: relative;">
+            <div style="border-top: 1px solid #e2e8f0; position: absolute; width: 100%; top: 50%;"></div>
+            <span style="background: white; padding: 0 1rem; color: #94a3b8; font-size: 0.85rem; position: relative;">或</span>
+        </div>
+
+        <div style="margin-bottom: 0.5rem;">
+            <span style="font-weight: 600; color: #334155;">✏️ 方式二：粘贴数据</span>
+        </div>
+        <p id="pasteHint" style="margin-bottom: 0.8rem; color: #64748b; font-size: 0.85rem;">
+            每行一条记录，格式：货号,材料名称,颜色,37码,38码,39码,40码,41码,42码,备注
+        </p>
+        <textarea id="batchData" rows="8" style="width: 100%; padding: 1rem; border-radius: 16px; border: 1.5px solid #e2e8f0; font-family: monospace; font-size: 0.9rem;" placeholder="粘贴表格数据..."></textarea>
+
+        <div style="margin-top: 1rem; display: flex; gap: 1rem; justify-content: flex-end;">
+            <button type="button" class="btn-outline" onclick="closeBatchModal()">取消</button>
+            <button type="button" class="btn btn-success" onclick="submitBatch()">批量入库</button>
+        </div>
+        <div id="batchResult" style="margin-top: 1rem;"></div>
+    </div>
+</div>
+
+<!-- 单件入库模态框 -->
+<div id="singleAddModal" class="modal">
+    <div class="modal-content" style="max-width: 600px;">
+        <h3 style="margin-bottom: 1.5rem;">➕ 新增入库 - {{ type_names.get(inventory_type, '') }}</h3>
+        <form id="singleAddForm">
+            <input type="hidden" name="inventory_type" value="{{ inventory_type }}">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                <div><label>货号 *</label><input type="text" name="product_code" required style="width:100%; border-radius:30px;"></div>
+                <div><label>材料名称 *</label><input type="text" name="material_name" required style="width:100%; border-radius:30px;"></div>
+                <div><label>颜色 *</label><input type="text" name="color" required style="width:100%; border-radius:30px;"></div>
+                <div><label>单位</label><select name="unit" style="width:100%; border-radius:30px;"><option value="双">双</option><option value="米">米</option></select></div>
+            </div>
+            <div style="display: flex; gap: 1rem; margin: 1rem 0;">
+                <div style="flex:1;"><label>起始码</label><input type="number" name="size_start" id="singleSizeStart" value="37" min="1" max="50"></div>
+                <div style="flex:1;"><label>结束码</label><input type="number" name="size_end" id="singleSizeEnd" value="42" min="1" max="50"></div>
+                <button type="button" class="btn-secondary" onclick="generateSingleLabels()">应用</button>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(3,1fr); gap: 1rem; margin-bottom: 1rem;">
+                <div><label id="singleLabel1">37码</label><input type="number" name="size_1" step="1" value="0"></div>
+                <div><label id="singleLabel2">38码</label><input type="number" name="size_2" step="1" value="0"></div>
+                <div><label id="singleLabel3">39码</label><input type="number" name="size_3" step="1" value="0"></div>
+                <div><label id="singleLabel4">40码</label><input type="number" name="size_4" step="1" value="0"></div>
+                <div><label id="singleLabel5">41码</label><input type="number" name="size_5" step="1" value="0"></div>
+                <div><label id="singleLabel6">42码</label><input type="number" name="size_6" step="1" value="0"></div>
+            </div>
+            <div><label>备注</label><input type="text" name="notes" style="width:100%; border-radius:30px;"></div>
+            <div style="display: flex; gap: 1rem; margin-top: 1.5rem; justify-content: flex-end;">
+                <button type="button" class="btn-outline" onclick="closeSingleAddModal()">取消</button>
+                <button type="submit" class="btn btn-success">确认入库</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- 编辑模态框 -->
+<div id="editModal" class="modal">
+    <div class="modal-content" style="max-width: 500px;">
+        <h3 style="margin-bottom: 1.5rem;">✏️ 编辑信息</h3>
+        <form id="editForm">
+            <input type="hidden" name="id" id="editId">
+            <div style="margin-bottom: 1rem;"><label>货号</label><input type="text" name="product_code" id="editProductCode" required style="width:100%; border-radius:30px;"></div>
+            <div style="margin-bottom: 1rem;"><label>材料名称</label><input type="text" name="material_name" id="editMaterialName" required style="width:100%; border-radius:30px;"></div>
+            <div style="margin-bottom: 1rem;"><label>颜色</label><input type="text" name="color" id="editColor" required style="width:100%; border-radius:30px;"></div>
+            <div style="margin-bottom: 1rem;"><label>备注</label><input type="text" name="notes" id="editNotes" style="width:100%; border-radius:30px;"></div>
+            <div style="display: flex; gap: 1rem; margin-top: 1.5rem; justify-content: flex-end;">
+                <button type="button" class="btn-outline" onclick="closeEditModal()">取消</button>
+                <button type="submit" class="btn btn-success">保存</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<style>
+    .inventory-tab {
+        background: white; border: 1.5px solid #cbd5e1; color: #334155;
+        padding: 0.6rem 1.5rem; border-radius: 40px; font-weight: 600; text-decoration: none; transition: all 0.2s;
+    }
+    .inventory-tab.active { background: #2563eb; border-color: #2563eb; color: white; }
+    .btn-edit, .btn-delete {
+        display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+        padding: 0.4rem 1rem; font-size: 0.85rem; font-weight: 500; border-radius: 30px; cursor: pointer;
+        transition: all 0.15s; text-decoration: none; border: none; box-shadow: 0 2px 4px rgba(0,0,0,0.02); margin-right: 0.5rem;
+    }
+    .btn-edit { background: #eef2ff; color: #2563eb; border: 1px solid #bfdbfe; }
+    .btn-edit:hover { background: #dbeafe; border-color: #93c5fd; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(37,99,235,0.08); }
+    .btn-delete { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+    .btn-delete:hover { background: #fee2e2; border-color: #fca5a5; transform: translateY(-1px); box-shadow: 0 4px 8px rgba(220,38,38,0.08); }
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); backdrop-filter: blur(4px); justify-content: center; align-items: center; z-index: 1000; }
+    .modal-content { background: white; padding: 2rem; border-radius: 24px; max-height: 80vh; overflow-y: auto; }
+</style>
+
+<script>
+    const batchModal = document.getElementById('batchModal');
+    const singleModal = document.getElementById('singleAddModal');
+    const editModal = document.getElementById('editModal');
+
+    function openBatchModal() { batchModal.style.display = 'flex'; document.body.style.overflow = 'hidden'; }
+    function closeBatchModal() { batchModal.style.display = 'none'; document.body.style.overflow = ''; }
+    function openSingleAddModal() { singleModal.style.display = 'flex'; document.body.style.overflow = 'hidden'; }
+    function closeSingleAddModal() { singleModal.style.display = 'none'; document.body.style.overflow = ''; }
+    function closeEditModal() { editModal.style.display = 'none'; document.body.style.overflow = ''; }
+
+    function generateSingleLabels() {
+        const start = parseInt(document.getElementById('singleSizeStart').value);
+        const end = parseInt(document.getElementById('singleSizeEnd').value);
+        if (!start || !end || start > end || end - start > 5) return;
+        const sizes = [];
+        for (let i = start; i <= end; i++) sizes.push(i);
+        for (let i = 1; i <= 6; i++) {
+            const label = document.getElementById(`singleLabel${i}`);
+            const input = document.querySelector(`[name="size_${i}"]`);
+            if (i <= sizes.length) {
+                label.textContent = `${sizes[i-1]}码`;
+                input.disabled = false;
+            } else {
+                label.textContent = `码段${i}`;
+                input.disabled = true;
+                input.value = 0;
+            }
+        }
+    }
+
+    // 码段范围配置监听
+    function updateSegCount() {
+        const start = parseInt(document.getElementById('batchSizeStart').value) || 37;
+        const end = parseInt(document.getElementById('batchSizeEnd').value) || 42;
+        const count = Math.max(1, Math.min(6, end - start + 1));
+        document.getElementById('segCount').textContent = count;
+        // 更新下载链接
+        document.getElementById('downloadTemplateLink').href = `/api/inventory/download_template?size_start=${start}&size_end=${end}`;
+        // 更新粘贴说明
+        const labels = [];
+        for (let i = 0; i < count; i++) labels.push((start + i) + '码');
+        document.getElementById('pasteHint').textContent =
+            `每行一条记录，格式：货号,材料名称,颜色,${labels.join(',')},备注`;
+    }
+    document.getElementById('batchSizeStart').addEventListener('change', updateSegCount);
+    document.getElementById('batchSizeEnd').addEventListener('change', updateSegCount);
+
+    async function submitBatch() {
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = '提交中...';
+        const data = document.getElementById('batchData').value.trim();
+        if (!data) { alert('请粘贴数据或上传文件'); btn.disabled = false; btn.textContent = '批量入库'; return; }
+        const lines = data.split('\n').filter(l => l.trim());
+
+        // 获取码段范围
+        const sizeStart = parseInt(document.getElementById('batchSizeStart').value) || 37;
+        const sizeEnd = parseInt(document.getElementById('batchSizeEnd').value) || 42;
+        const segCount = sizeEnd - sizeStart + 1;
+
+        const items = [];
+        for (let line of lines) {
+            const parts = line.split(',').map(p => p.trim());
+            if (parts.length < 3 + segCount) continue;  // 至少需要 3信息列 + segCount码段列
+            items.push({
+                product_code: parts[0],
+                material_name: parts[1],
+                color: parts[2],
+                sizes: parts.slice(3, 3 + segCount).map(v => parseFloat(v) || 0),
+                notes: parts[3 + segCount] || ''
+            });
+        }
+        if (items.length === 0) { alert('没有有效数据'); btn.disabled = false; btn.textContent = '批量入库'; return; }
+        try {
+            const resp = await csrfFetch('/api/inventory/batch_add', {
+                method: 'POST',
+                body: JSON.stringify({ inventory_type: '{{ inventory_type }}', items, size_start: sizeStart, size_end: sizeEnd })
+            });
+            const result = await resp.json();
+            if (result.success) { alert(`成功入库 ${result.count} 条`); location.reload(); }
+            else { alert('入库失败: ' + result.error); }
+        } catch (err) {
+            alert('请求失败，请重试');
+        }
+        btn.disabled = false;
+        btn.textContent = '批量入库';
+    }
+
+    // ========== 文件上传处理 ==========
+    async function handleFileUpload(input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        // 显示文件名
+        document.getElementById('fileNameDisplay').textContent = '📄 ' + file.name;
+        document.getElementById('fileNameDisplay').style.display = 'block';
+
+        // 获取码段范围
+        const sizeStart = parseInt(document.getElementById('batchSizeStart').value) || 37;
+        const sizeEnd = parseInt(document.getElementById('batchSizeEnd').value) || 42;
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('inventory_type', '{{ inventory_type }}');
+        formData.append('size_start', sizeStart);
+        formData.append('size_end', sizeEnd);
+
+        const uploadArea = document.getElementById('fileUploadArea');
+        uploadArea.style.opacity = '0.5';
+        uploadArea.style.pointerEvents = 'none';
+
+        try {
+            const resp = await csrfFetch('/api/inventory/upload_batch', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await resp.json();
+            if (result.success) {
+                alert(`文件上传成功，入库 ${result.count} 条`);
+                location.reload();
+            } else {
+                alert('入库失败: ' + (result.error || '未知错误'));
+                document.getElementById('fileNameDisplay').textContent = '❌ ' + (result.error || '失败');
+            }
+        } catch (err) {
+            alert('上传失败，请重试');
+            document.getElementById('fileNameDisplay').textContent = '❌ 上传失败';
+        }
+
+        uploadArea.style.opacity = '1';
+        uploadArea.style.pointerEvents = '';
+    }
+
+    // 拖拽上传支持
+    document.addEventListener('DOMContentLoaded', function() {
+        const uploadArea = document.getElementById('fileUploadArea');
+        if (!uploadArea) return;
+
+        uploadArea.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            this.style.borderColor = '#3b82f6';
+            this.style.background = '#eff6ff';
+        });
+        uploadArea.addEventListener('dragleave', function(e) {
+            e.preventDefault();
+            this.style.borderColor = '#cbd5e1';
+            this.style.background = '';
+        });
+        uploadArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            this.style.borderColor = '#cbd5e1';
+            this.style.background = '';
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                document.getElementById('batchFile').files = files;
+                handleFileUpload(document.getElementById('batchFile'));
+            }
+        });
+    });
+
+    document.getElementById('singleAddForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = this.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        btn.textContent = '提交中...';
+        const formData = new FormData(this);
+        const item = {
+            product_code: formData.get('product_code'),
+            material_name: formData.get('material_name'),
+            color: formData.get('color'),
+            unit: formData.get('unit'),
+            size_start: parseInt(formData.get('size_start')),
+            size_end: parseInt(formData.get('size_end')),
+            sizes: [
+                parseFloat(formData.get('size_1')) || 0,
+                parseFloat(formData.get('size_2')) || 0,
+                parseFloat(formData.get('size_3')) || 0,
+                parseFloat(formData.get('size_4')) || 0,
+                parseFloat(formData.get('size_5')) || 0,
+                parseFloat(formData.get('size_6')) || 0
+            ],
+            notes: formData.get('notes') || ''
+        };
+        try {
+            const resp = await csrfFetch('/api/inventory/batch_add', {
+                method: 'POST',
+                body: JSON.stringify({ inventory_type: '{{ inventory_type }}', items: [item] })
+            });
+            const result = await resp.json();
+            if (result.success) { alert('入库成功'); location.reload(); }
+            else { alert('入库失败: ' + result.error); }
+        } catch (err) {
+            alert('请求失败，请重试');
+        }
+        btn.disabled = false;
+        btn.textContent = '确认入库';
+    });
+
+    function editMaterial(id, code, name, color, notes) {
+        document.getElementById('editId').value = id;
+        document.getElementById('editProductCode').value = code;
+        document.getElementById('editMaterialName').value = name;
+        document.getElementById('editColor').value = color;
+        document.getElementById('editNotes').value = notes;
+        editModal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+
+    document.getElementById('editForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const btn = this.querySelector('button[type="submit"]');
+        btn.disabled = true;
+        btn.textContent = '保存中...';
+        const id = document.getElementById('editId').value;
+        const formData = new FormData(this);
+        try {
+            const resp = await csrfFetch(`/api/inventory/${id}/update`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    product_code: formData.get('product_code'),
+                    material_name: formData.get('material_name'),
+                    color: formData.get('color'),
+                    notes: formData.get('notes')
+                })
+            });
+            const result = await resp.json();
+            if (result.success) { alert('修改成功'); location.reload(); }
+            else { alert('修改失败: ' + result.error); }
+        } catch (err) {
+            alert('请求失败，请重试');
+        }
+        btn.disabled = false;
+        btn.textContent = '保存';
+    });
+
+    window.onclick = function(e) {
+        if (e.target === batchModal) closeBatchModal();
+        if (e.target === singleModal) closeSingleAddModal();
+        if (e.target === editModal) closeEditModal();
+    };
+</script>
+{% endblock %}

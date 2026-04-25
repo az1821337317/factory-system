@@ -1,0 +1,1648 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_wtf import CSRFProtect
+from flask_wtf.csrf import CSRFError
+from functools import wraps
+import sqlite3
+from datetime import datetime, date, timedelta
+import os
+from dotenv import load_dotenv
+load_dotenv()
+import json
+import logging
+import secrets
+import uuid
+from werkzeug.utils import secure_filename
+
+app = Flask(__name__)
+
+# ---------- 安全配置 ----------
+app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+csrf = CSRFProtect(app)
+
+# ---------- 上传配置 ----------
+UPLOAD_FOLDER = 'static/uploads/orders'
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# ---------- 日志配置 ----------
+logging.basicConfig(
+    filename='app.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s'
+)
+
+# ---------- 登录限制（带自动清理防内存泄漏） ----------
+login_attempts = {}
+MAX_LOGIN_ATTEMPTS = 5
+LOCKOUT_TIME = timedelta(minutes=15)
+LOGIN_ATTEMPTS_MAX_SIZE = 10000
+
+def _cleanup_old_attempts():
+    """清理过期登录记录，防止内存泄漏"""
+    now = datetime.now()
+    expired = [
+        ip for ip, (attempts, first_fail) in login_attempts.items()
+        if attempts < MAX_LOGIN_ATTEMPTS or (now - first_fail) >= LOCKOUT_TIME
+    ]
+    for ip in expired[:1000]:
+        login_attempts.pop(ip, None)
+
+def is_login_blocked(ip):
+    if ip not in login_attempts:
+        return False
+    attempts, first_fail_time = login_attempts[ip]
+    if attempts >= MAX_LOGIN_ATTEMPTS:
+        if datetime.now() - first_fail_time < LOCKOUT_TIME:
+            return True
+        else:
+            del login_attempts[ip]
+    return False
+
+def record_failed_attempt(ip):
+    if len(login_attempts) > LOGIN_ATTEMPTS_MAX_SIZE:
+        _cleanup_old_attempts()
+    now = datetime.now()
+    if ip not in login_attempts:
+        login_attempts[ip] = [1, now]
+    else:
+        attempts, first_fail = login_attempts[ip]
+        login_attempts[ip] = [attempts + 1, first_fail]
+
+def clear_attempts(ip):
+    if ip in login_attempts:
+        del login_attempts[ip]
+
+# ---------- 输入校验 ----------
+def validate_str(val, max_len=50, required=True):
+    if required and not val:
+        raise ValueError("字段不能为空")
+    if val is None:
+        return None
+    val = str(val).strip()
+    if len(val) > max_len:
+        raise ValueError(f"长度不能超过 {max_len} 字符")
+    return val
+
+def validate_int(val, min_val=0, max_val=1000000):
+    try:
+        val = int(val)
+    except (TypeError, ValueError):
+        raise ValueError("必须是数字")
+    if val < min_val or val > max_val:
+        raise ValueError(f"数值必须在 {min_val} 到 {max_val} 之间")
+    return val
+
+def validate_float(val, min_val=0.0, max_val=1000000.0):
+    try:
+        val = float(val)
+    except (TypeError, ValueError):
+        raise ValueError("必须是数字")
+    if val < min_val or val > max_val:
+        raise ValueError(f"数值必须在 {min_val} 到 {max_val} 之间")
+    return val
+
+def validate_date(val):
+    """校验日期格式 YYYY-MM-DD"""
+    if not val:
+        raise ValueError("日期不能为空")
+    val = str(val).strip()
+    try:
+        datetime.strptime(val, '%Y-%m-%d')
+    except ValueError:
+        raise ValueError("日期格式必须为 YYYY-MM-DD")
+    return val
+
+def safe_json_load(s):
+    try:
+        return json.loads(s)
+    except:
+        return {}
+
+# 注册为模板过滤器（修复order_detail页面500错误）
+app.jinja_env.filters['safe_json_load'] = safe_json_load
+
+# ---------- 数据库连接 ----------
+def get_db():
+    conn = sqlite3.connect(
+        'production.db',
+        timeout=10,
+        check_same_thread=False
+    )
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    return conn
+
+# ---------- Flask-Login ----------
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = 'login'
+login_manager.login_message = '请先登录'
+
+class User(UserMixin):
+    def __init__(self, user_id, username, role, workshop):
+        self.id = user_id
+        self.username = username
+        self.role = role
+        self.workshop = workshop
+
+@login_manager.user_loader
+def load_user(user_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, username, role, workshop FROM users WHERE id = ?", (user_id,))
+        row = c.fetchone()
+        if row:
+            return User(row['id'], row['username'], row['role'], row['workshop'])
+    finally:
+        conn.close()
+    return None
+
+def role_required(*roles):
+    def decorator(f):
+        @wraps(f)
+        @login_required
+        def decorated_function(*args, **kwargs):
+            if current_user.role not in roles:
+                flash('无权限访问', 'danger')
+                return redirect(url_for('index'))
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def generate_order_no():
+    # 使用 日期+时间戳+随机数 避免并发冲突
+    today = date.today().strftime('%Y%m%d')
+    ts = datetime.now().strftime('%H%M%S')
+    rand = secrets.token_hex(2).upper()
+    return f"PO{today}{ts}{rand}"
+
+# ---------- 设备检测 ----------
+def is_mobile():
+    user_agent = request.headers.get('User-Agent', '').lower()
+    mobile_keywords = ['mobile', 'android', 'iphone', 'ipad', 'phone', 'ios']
+    return any(keyword in user_agent for keyword in mobile_keywords)
+
+def render_mobile(template_name, **context):
+    mobile_template = template_name.replace('.html', '_mobile.html')
+    desktop_template = template_name
+    if is_mobile():
+        mobile_path = os.path.join(app.template_folder, mobile_template)
+        if os.path.exists(mobile_path):
+            return render_template(mobile_template, **context)
+    return render_template(desktop_template, **context)
+
+# ---------- CSRF 错误处理 ----------
+@app.errorhandler(CSRFError)
+def handle_csrf_error(e):
+    if request.path.startswith('/api/'):
+        response = jsonify({
+            'success': False,
+            'error': 'CSRF token missing or invalid',
+            'detail': str(e)
+        })
+        response.status_code = 400
+        return response
+    return "CSRF验证失败，请刷新页面重试", 400
+
+# ---------- 全局异常处理（不泄露敏感信息） ----------
+@app.errorhandler(Exception)
+def handle_exception(e):
+    app.logger.error(f"未处理异常: {str(e)}", exc_info=True)
+    if request.path.startswith('/api/'):
+        response = jsonify({'success': False, 'error': '服务器内部错误'})
+        response.status_code = 500
+        return response
+    return "服务器内部错误，请联系管理员", 500
+
+# ---------- favicon 豁免 ----------
+@app.route('/favicon.ico')
+@csrf.exempt
+def favicon():
+    return '', 204
+
+# ---------- 数据库初始化（完全重构，统一使用序号码段）----------
+def init_db():
+    conn = get_db()
+    try:
+        c = conn.cursor()
+
+        # 用户表
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL,
+            workshop TEXT
+        )''')
+
+        admin_pwd = os.environ.get("ADMIN_PASSWORD")
+        if not admin_pwd:
+            raise RuntimeError("请设置环境变量 ADMIN_PASSWORD（强密码）")
+        c.execute("SELECT id FROM users WHERE username = 'admin'")
+        if not c.fetchone():
+            hashed = generate_password_hash(admin_pwd)
+            c.execute("INSERT INTO users (username, password, role, workshop) VALUES (?, ?, ?, ?)",
+                      ('admin', hashed, 'admin', None))
+
+        demo_pwd = os.environ.get("DEMO_PASSWORD", "demo123456")
+        workshop_users = [
+            ('blow_worker', demo_pwd, 'blow'),
+            ('pu_worker', demo_pwd, 'pu'),
+            ('paint_worker', demo_pwd, 'paint'),
+            ('plastic_worker', demo_pwd, 'plastic'),
+            ('assembly_worker', demo_pwd, 'assembly')
+        ]
+        for username, pwd, workshop in workshop_users:
+            c.execute("SELECT id FROM users WHERE username = ?", (username,))
+            if not c.fetchone():
+                hashed = generate_password_hash(pwd)
+                c.execute("INSERT INTO users (username, password, role, workshop) VALUES (?, ?, 'worker', ?)",
+                          (username, hashed, workshop))
+
+        # 车间定义表
+        c.execute('''CREATE TABLE IF NOT EXISTS workshops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            sequence INTEGER NOT NULL
+        )''')
+        default_workshops = [
+            ('blow', '吹气', 1),
+            ('pu', 'PU', 1),
+            ('paint', '喷漆', 2),
+            ('plastic', '滴塑', 1),
+            ('assembly', '成型', 3)
+        ]
+        for code, name, seq in default_workshops:
+            c.execute("INSERT OR IGNORE INTO workshops (code, name, sequence) VALUES (?, ?, ?)", (code, name, seq))
+
+        # 生产指令单主表（移除不再需要的字段）
+        c.execute('''CREATE TABLE IF NOT EXISTS prod_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_no TEXT UNIQUE NOT NULL,
+            product_code TEXT NOT NULL,
+            sole_model TEXT,
+            upper_model TEXT,
+            created_date TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_by INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            notes TEXT,
+            order_type TEXT DEFAULT 'assembly',
+            sole_source TEXT,
+            sole_material_id INTEGER,
+            upper_source TEXT,
+            upper_material_id INTEGER,
+            other_materials TEXT,
+            direct_sale BOOLEAN DEFAULT 0,
+            images TEXT,
+            FOREIGN KEY (created_by) REFERENCES users(id)
+        )''')
+
+        # 颜色明细表：统一为6个码段（序号1~6），彻底移除具体鞋码字段
+        c.execute('''CREATE TABLE IF NOT EXISTS prod_order_colors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            color_name TEXT NOT NULL,
+            size_1 INTEGER DEFAULT 0,
+            size_2 INTEGER DEFAULT 0,
+            size_3 INTEGER DEFAULT 0,
+            size_4 INTEGER DEFAULT 0,
+            size_5 INTEGER DEFAULT 0,
+            size_6 INTEGER DEFAULT 0,
+            completed_1 INTEGER DEFAULT 0,
+            completed_2 INTEGER DEFAULT 0,
+            completed_3 INTEGER DEFAULT 0,
+            completed_4 INTEGER DEFAULT 0,
+            completed_5 INTEGER DEFAULT 0,
+            completed_6 INTEGER DEFAULT 0,
+            FOREIGN KEY (order_id) REFERENCES prod_orders(id) ON DELETE CASCADE
+        )''')
+
+        # 工序任务表
+        c.execute('''CREATE TABLE IF NOT EXISTS prod_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            workshop_code TEXT NOT NULL,
+            parent_task_id INTEGER,
+            total_boxes INTEGER NOT NULL,
+            completed_boxes INTEGER NOT NULL DEFAULT 0,
+            status TEXT DEFAULT 'pending',
+            confirmed_by INTEGER,
+            confirmed_at TEXT,
+            received_quantity INTEGER DEFAULT 0,
+            received_at TEXT,
+            FOREIGN KEY (order_id) REFERENCES prod_orders(id) ON DELETE CASCADE,
+            FOREIGN KEY (workshop_code) REFERENCES workshops(code),
+            FOREIGN KEY (parent_task_id) REFERENCES prod_tasks(id)
+        )''')
+
+        # 库存表：统一为6个码段（序号1~6）
+        c.execute('''CREATE TABLE IF NOT EXISTS inventory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inventory_type TEXT NOT NULL,
+            product_code TEXT NOT NULL,
+            material_name TEXT NOT NULL,
+            color TEXT NOT NULL,
+            size_1 REAL DEFAULT 0,
+            size_2 REAL DEFAULT 0,
+            size_3 REAL DEFAULT 0,
+            size_4 REAL DEFAULT 0,
+            size_5 REAL DEFAULT 0,
+            size_6 REAL DEFAULT 0,
+            unit TEXT DEFAULT '双',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            notes TEXT,
+            UNIQUE(inventory_type, product_code, color)
+        )''')
+
+        # 出入库日志表
+        c.execute('''CREATE TABLE IF NOT EXISTS inventory_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inventory_id INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            sizes_json TEXT NOT NULL,
+            operator_id INTEGER NOT NULL,
+            timestamp TEXT NOT NULL,
+            order_id INTEGER,
+            task_id INTEGER,
+            notes TEXT,
+            FOREIGN KEY (inventory_id) REFERENCES inventory(id),
+            FOREIGN KEY (operator_id) REFERENCES users(id),
+            FOREIGN KEY (order_id) REFERENCES prod_orders(id),
+            FOREIGN KEY (task_id) REFERENCES prod_tasks(id)
+        )''')
+
+        # --- 兼容旧数据库：同步 fix_db.py 添加的字段和表 ---
+        # 1. prod_order_colors 表添加 completed 字段（如不存在）
+        try:
+            c.execute("SELECT completed_1 FROM prod_order_colors LIMIT 0")
+        except sqlite3.OperationalError:
+            for i in range(1, 7):
+                c.execute(f"ALTER TABLE prod_order_colors ADD COLUMN completed_{i} INTEGER DEFAULT 0")
+
+        # 2. inventory 表添加 unit, notes 字段（如不存在）
+        for col_name, col_type in [('unit', "TEXT DEFAULT '双'"), ('notes', 'TEXT')]:
+            try:
+                c.execute(f"SELECT {col_name} FROM inventory LIMIT 0")
+            except sqlite3.OperationalError:
+                c.execute(f"ALTER TABLE inventory ADD COLUMN {col_name} {col_type}")
+
+        # 3. prod_orders 表添加来源相关字段（如不存在）
+        for col_name, col_type in [
+            ('order_type', "TEXT DEFAULT 'assembly'"), ('sole_source', 'TEXT'),
+            ('sole_material_id', 'INTEGER'), ('upper_source', 'TEXT'),
+            ('upper_material_id', 'INTEGER'), ('other_materials', 'TEXT'),
+            ('direct_sale', 'BOOLEAN DEFAULT 0'), ('images', 'TEXT'),
+        ]:
+            try:
+                c.execute(f"SELECT {col_name} FROM prod_orders LIMIT 0")
+            except sqlite3.OperationalError:
+                c.execute(f"ALTER TABLE prod_orders ADD COLUMN {col_name} {col_type}")
+
+        # 4. prod_tasks 表添加 parent_task_id, received 字段（如不存在）
+        for col_name, col_type in [
+            ('parent_task_id', 'INTEGER'), ('received_quantity', 'INTEGER DEFAULT 0'),
+            ('received_at', 'TEXT'), ('confirmed_by', 'INTEGER'), ('confirmed_at', 'TEXT'),
+        ]:
+            try:
+                c.execute(f"SELECT {col_name} FROM prod_tasks LIMIT 0")
+            except sqlite3.OperationalError:
+                c.execute(f"ALTER TABLE prod_tasks ADD COLUMN {col_name} {col_type}")
+
+        # 5. 创建 inventory_locks 表（如不存在）
+        c.execute('''CREATE TABLE IF NOT EXISTS inventory_locks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            inventory_id INTEGER NOT NULL,
+            locked_1 REAL DEFAULT 0,
+            locked_2 REAL DEFAULT 0,
+            locked_3 REAL DEFAULT 0,
+            locked_4 REAL DEFAULT 0,
+            locked_5 REAL DEFAULT 0,
+            locked_6 REAL DEFAULT 0,
+            order_id INTEGER,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (inventory_id) REFERENCES inventory(id)
+        )''')
+
+        # 6. inventory 表添加 stock_locked（如不存在）
+        try:
+            c.execute("SELECT stock_locked FROM inventory LIMIT 0")
+        except sqlite3.OperationalError:
+            c.execute("ALTER TABLE inventory ADD COLUMN stock_locked TEXT DEFAULT '{}' ")
+
+        # 7. prod_orders 表添加 size_start / size_end（码段范围，如不存在）
+        for col_name, col_type in [('size_start', 'INTEGER DEFAULT 37'), ('size_end', 'INTEGER DEFAULT 42')]:
+            try:
+                c.execute(f"SELECT {col_name} FROM prod_orders LIMIT 0")
+            except sqlite3.OperationalError:
+                c.execute(f"ALTER TABLE prod_orders ADD COLUMN {col_name} {col_type}")
+
+        # 8. inventory 表添加 size_start / size_end（码段范围，如不存在）
+        for col_name, col_type in [('size_start', 'INTEGER DEFAULT 37'), ('size_end', 'INTEGER DEFAULT 42')]:
+            try:
+                c.execute(f"SELECT {col_name} FROM inventory LIMIT 0")
+            except sqlite3.OperationalError:
+                c.execute(f"ALTER TABLE inventory ADD COLUMN {col_name} {col_type}")
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+# ---------- 通用出库函数（统一使用序号码段，安全SQL） ----------
+# 允许的数据库字段白名单（防止SQL注入）
+_SIZE_FIELDS = [f'size_{i}' for i in range(1, 7)]
+
+def consume_inventory(conn, inventory_type, product_code, color, quantities, order_id, task_id=None, operator_id=None):
+    c = conn.cursor()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    operator = operator_id or current_user.id
+
+    c.execute('''SELECT id FROM inventory 
+                 WHERE inventory_type = ? AND product_code = ? AND color = ?''',
+              (inventory_type, product_code, color))
+    inv = c.fetchone()
+    if not inv:
+        raise ValueError(f'库存不存在：{inventory_type} {product_code} {color}')
+
+    for idx, qty in enumerate(quantities):
+        if qty <= 0:
+            continue
+        field = _SIZE_FIELDS[idx]  # 从白名单取字段名
+        # 使用参数化查询，字段名通过白名单确保安全性
+        c.execute(f'SELECT "{field}" FROM inventory WHERE id = ?', (inv['id'],))
+        row = c.fetchone()
+        current = row[0] or 0
+        if current < qty:
+            raise ValueError(f'库存不足：{product_code} 码段{idx+1} 需要{qty}，可用{current}')
+        c.execute(f'UPDATE inventory SET "{field}" = "{field}" - ? WHERE id = ?', (qty, inv['id']))
+
+    c.execute('''INSERT INTO inventory_logs 
+                 (inventory_id, action, sizes_json, operator_id, timestamp, order_id, task_id, notes)
+                 VALUES (?, 'consume_out', ?, ?, ?, ?, ?, ?)''',
+              (inv['id'], json.dumps(quantities), operator, now, order_id, task_id, '成型领用出库'))
+    return inv['id']
+
+def _create_task(cursor, order_id, workshop_code, total_boxes, parent_task_id=None):
+    app.logger.info(f"创建任务: order_id={order_id}, workshop={workshop_code}, total_boxes={total_boxes}, parent={parent_task_id}")
+    cursor.execute('''INSERT INTO prod_tasks
+        (order_id, workshop_code, parent_task_id, total_boxes, status)
+        VALUES (?, ?, ?, ?, 'pending')''',
+        (order_id, workshop_code, parent_task_id, total_boxes))
+    app.logger.info(f"任务创建成功: id={cursor.lastrowid}, total_boxes={total_boxes}")
+    return cursor.lastrowid
+
+# ---------- 登录 ----------
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    ip = request.remote_addr
+    if is_login_blocked(ip):
+        flash('尝试次数过多，请15分钟后再试', 'danger')
+        return render_template('login.html')
+    if request.method == 'POST':
+        try:
+            username = validate_str(request.form.get('username'), max_len=30)
+            password = request.form.get('password', '')
+        except ValueError as e:
+            flash(str(e), 'danger')
+            return render_template('login.html')
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT id, username, password, role, workshop FROM users WHERE username = ?", (username,))
+            row = c.fetchone()
+        finally:
+            conn.close()
+        if row and check_password_hash(row['password'], password):
+            user = User(row['id'], row['username'], row['role'], row['workshop'])
+            login_user(user, remember=False)
+            clear_attempts(ip)
+            if user.role == 'worker':
+                return redirect(url_for('workshop_tasks'))
+            else:
+                return redirect(url_for('index'))
+        else:
+            record_failed_attempt(ip)
+            flash('用户名或密码错误', 'danger')
+    if is_mobile():
+        return render_template('login_mobile.html')
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+# ---------- 首页 ----------
+@app.route('/')
+@login_required
+def index():
+    search = request.args.get('search', '').strip()
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        sql = '''SELECT id, order_no, product_code, sole_model, upper_model, created_date, status, order_type
+                 FROM prod_orders WHERE 1=1'''
+        params = []
+        if search:
+            sql += ''' AND (order_no LIKE ? OR product_code LIKE ? OR sole_model LIKE ? OR upper_model LIKE ?)'''
+            like = f'%{search}%'
+            params.extend([like, like, like, like])
+        sql += ' ORDER BY id DESC'
+        c.execute(sql, params)
+        orders = c.fetchall()
+    finally:
+        conn.close()
+    return render_mobile('index.html', orders=orders, search=search)
+
+# ---------- 删除指令单（POST + 仅管理员） ----------
+@app.route('/order/<int:order_id>/delete', methods=['POST'])
+@login_required
+def delete_order(order_id):
+    if current_user.role != 'admin':
+        flash('无权限删除指令单', 'danger')
+        return redirect(url_for('index'))
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT order_no FROM prod_orders WHERE id = ?", (order_id,))
+        row = c.fetchone()
+        if not row:
+            flash('指令单不存在', 'danger')
+            return redirect(url_for('index'))
+        c.execute("DELETE FROM prod_orders WHERE id = ?", (order_id,))
+        conn.commit()
+        flash(f'指令单 {row["order_no"]} 已删除', 'success')
+    except Exception as e:
+        conn.rollback()
+        flash('删除失败', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('index'))
+
+# ---------- API：搜索库存 ----------
+@app.route('/api/inventory/search')
+@login_required
+def api_inventory_search():
+    q = request.args.get('q', '').strip()
+    inventory_type = request.args.get('type', '').strip()
+    color = request.args.get('color', '').strip()
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        sql = '''SELECT id, inventory_type, product_code, material_name, color,
+                        size_1, size_2, size_3, size_4, size_5, size_6,
+                        unit, size_start, size_end
+                 FROM inventory WHERE 1=1'''
+        params = []
+        if q:
+            sql += " AND (product_code LIKE ? OR material_name LIKE ?)"
+            params.extend([f'%{q}%', f'%{q}%'])
+        if inventory_type:
+            sql += " AND inventory_type = ?"
+            params.append(inventory_type)
+        if color:
+            sql += " AND color LIKE ?"
+            params.append(f'%{color}%')
+        sql += " ORDER BY product_code LIMIT 50"
+        c.execute(sql, params)
+        results = c.fetchall()
+        materials = []
+        for row in results:
+            quantities = [row['size_1'], row['size_2'], row['size_3'], row['size_4'], row['size_5'], row['size_6']]
+            total_available = sum(quantities)
+            unit = row['unit'] if row['unit'] else '双'
+            stock = {}
+            for i, qty in enumerate(quantities):
+                if qty > 0:
+                    stock[str(i+1)] = qty
+            materials.append({
+                'id': row['id'],
+                'product_code': row['product_code'],
+                'material_name': row['material_name'],
+                'inventory_type': row['inventory_type'],
+                'color': row['color'],
+                'stock': stock,
+                'unit': unit,
+                'total': total_available,
+                'size_start': row['size_start'] or 37,
+                'size_end': row['size_end'] or 42
+            })
+        return jsonify(materials)
+    finally:
+        conn.close()
+
+# ---------- 批量入库 ----------
+@app.route('/api/inventory/batch_add', methods=['POST'])
+@login_required
+def api_inventory_batch_add():
+    if current_user.role != 'admin':
+        return jsonify({'success': False, 'error': '无权限'}), 403
+    data = request.get_json()
+    inventory_type = data.get('inventory_type')
+    items = data.get('items', [])
+    if inventory_type not in ('blow_sole', 'pu_sole', 'paint_sole', 'plastic_upper', 'domestic'):
+        return jsonify({'success': False, 'error': '无效库存类型'})
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("BEGIN IMMEDIATE")
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        count = 0
+        for item in items:
+            product_code = item['product_code']
+            material_name = item['material_name']
+            color = item['color']
+            sizes = item.get('sizes', [0]*6)
+            unit = item.get('unit', '双')
+            notes = item.get('notes', '')
+            item_size_start = item.get('size_start', 37)
+            item_size_end = item.get('size_end', 42)
+            c.execute('''SELECT id FROM inventory
+                         WHERE inventory_type = ? AND product_code = ? AND color = ?''',
+                      (inventory_type, product_code, color))
+            existing = c.fetchone()
+            if existing:
+                inv_id = existing['id']
+                for i in range(6):
+                    if sizes[i]:
+                        c.execute(f"UPDATE inventory SET size_{i+1} = size_{i+1} + ?, updated_at = ? WHERE id = ?",
+                                  (sizes[i], now, inv_id))
+                c.execute("UPDATE inventory SET size_start = ?, size_end = ? WHERE id = ?",
+                          (item_size_start, item_size_end, inv_id))
+                action = 'batch_inbound_existing'
+            else:
+                c.execute('''INSERT INTO inventory
+                            (inventory_type, product_code, material_name, color,
+                             size_1, size_2, size_3, size_4, size_5, size_6,
+                             unit, created_at, updated_at, notes, size_start, size_end)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (inventory_type, product_code, material_name, color, *sizes, unit, now, now, notes, item_size_start, item_size_end))
+                inv_id = c.lastrowid
+                action = 'batch_inbound_new'
+            c.execute('''INSERT INTO inventory_logs (inventory_id, action, sizes_json, operator_id, timestamp, notes)
+                         VALUES (?, ?, ?, ?, ?, ?)''',
+                      (inv_id, action, json.dumps({'sizes': sizes}), current_user.id, now, notes))
+            count += 1
+        conn.commit()
+        return jsonify({'success': True, 'count': count})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
+
+# ---------- 图片上传 API ----------
+@app.route('/api/upload_order_image', methods=['POST'])
+@login_required
+def upload_order_image():
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'error': '没有文件'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'error': '空文件名'}), 400
+    if not allowed_file(file.filename):
+        return jsonify({'success': False, 'error': '不支持的文件类型'}), 400
+
+    ext = file.filename.rsplit('.', 1)[1].lower()
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    filepath = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(filepath)
+    url = url_for('static', filename=f'uploads/orders/{filename}')
+    return jsonify({'success': True, 'url': url, 'filename': filename})
+
+# ---------- 获取订单图片 API ----------
+@app.route('/api/order/<int:order_id>/images')
+@login_required
+def api_order_images(order_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT images FROM prod_orders WHERE id = ?", (order_id,))
+        row = c.fetchone()
+        images = []
+        if row and row['images']:
+            images = safe_json_load(row['images'])
+        return jsonify({'images': images})
+    finally:
+        conn.close()
+
+# ---------- 创建指令单（完全重构，统一使用序号码段）----------
+@app.route('/create_order', methods=['GET', 'POST'])
+@login_required
+def create_order():
+    if request.method == 'POST':
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            c.execute("BEGIN IMMEDIATE")
+            order_type = request.form.get('order_type', 'blow')
+            created_date = validate_str(request.form.get('created_date'), max_len=10)
+            notes = validate_str(request.form.get('notes', ''), max_len=200, required=False)
+            direct_sale = bool(request.form.get('direct_sale'))
+            plastic_type = request.form.get('plastic_type', 'upper')
+            image_urls = request.form.get('image_urls', '[]')
+            size_start = validate_int(request.form.get('global_size_start', '37'), min_val=1, max_val=99)
+            size_end = validate_int(request.form.get('global_size_end', '42'), min_val=1, max_val=99)
+            if size_end - size_start != 5:
+                size_end = size_start + 5
+
+            # 前端已统一传递 size_1 ~ size_6 字段，直接解析
+            color_names = request.form.getlist('color_name[]')
+            if not color_names:
+                raise ValueError('请至少添加一个颜色')
+
+            # 按行收集数据
+            colors_map = {}
+            for key in request.form:
+                if key.startswith('size_'):
+                    parts = key.split('_')
+                    if len(parts) != 3:
+                        continue
+                    try:
+                        seg = int(parts[1])  # 1~6
+                        row_idx = int(parts[2])
+                    except ValueError:
+                        continue
+                    if seg < 1 or seg > 6:
+                        continue
+                    val = validate_int(request.form.get(key, '').strip() or 0, min_val=0)
+                    if row_idx not in colors_map:
+                        colors_map[row_idx] = {'sizes': [0]*6, 'name': ''}
+                    colors_map[row_idx]['sizes'][seg-1] = val
+
+            for idx, name in enumerate(color_names):
+                name = name.strip()
+                if name:
+                    if idx not in colors_map:
+                        colors_map[idx] = {'sizes': [0]*6, 'name': ''}
+                    colors_map[idx]['name'] = name
+
+            color_data = []
+            local_total_pairs = 0
+            for idx in sorted(colors_map.keys()):
+                item = colors_map[idx]
+                if not item['name']:
+                    continue
+                row_total = sum(item['sizes'])
+                if row_total == 0:
+                    continue
+                color_data.append({
+                    'name': item['name'],
+                    'sizes': item['sizes']
+                })
+                local_total_pairs += row_total
+
+            if not color_data:
+                raise ValueError('请至少填写一个码段的数量')
+
+            # 型号及来源
+            sole_model = ''
+            upper_model = ''
+            sole_source = None
+            sole_material_id = None
+            upper_source = None
+            upper_material_id = None
+            other_sources = request.form.getlist('other_source[]')
+            other_material_ids = request.form.getlist('other_material_id[]')
+
+            if order_type == 'blow':
+                sole_model = validate_str(request.form.get('sole_model'), max_len=30, required=True)
+                product_code = sole_model
+            elif order_type == 'pu':
+                sole_model = validate_str(request.form.get('sole_model'), max_len=30, required=True)
+                product_code = sole_model
+            elif order_type == 'plastic':
+                if plastic_type == 'sole':
+                    sole_model = validate_str(request.form.get('sole_model'), max_len=30, required=True)
+                    product_code = sole_model
+                    upper_model = ''
+                else:
+                    upper_model = validate_str(request.form.get('upper_model'), max_len=30, required=True)
+                    product_code = upper_model
+                    sole_model = ''
+            elif order_type == 'assembly':
+                product_code = validate_str(request.form.get('product_code'), max_len=30)
+                sole_model = validate_str(request.form.get('sole_model', ''), max_len=30, required=False) or ''
+                upper_model = validate_str(request.form.get('upper_model', ''), max_len=30, required=False) or ''
+                sole_source = request.form.get('sole_source')
+                upper_source = request.form.get('upper_source')
+                sole_material_id = request.form.get('sole_material_id')
+                upper_material_id = request.form.get('upper_material_id')
+
+            other_materials_list = []
+            for src, mat_id in zip(other_sources, other_material_ids):
+                if src:
+                    other_materials_list.append({'source': src, 'material_id': mat_id if mat_id else None})
+
+            order_no = generate_order_no()
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            c.execute('''INSERT INTO prod_orders
+                (order_no, product_code, sole_model, upper_model, created_date, status, created_by, created_at, notes,
+                 order_type, sole_source, sole_material_id, upper_source, upper_material_id, other_materials, direct_sale, images,
+                 size_start, size_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (order_no, product_code, sole_model, upper_model, created_date, 'pending',
+                 current_user.id, now, notes, order_type, sole_source, sole_material_id,
+                 upper_source, upper_material_id, json.dumps(other_materials_list) if other_materials_list else None, direct_sale,
+                 image_urls, size_start, size_end))
+            order_id = c.lastrowid
+
+            for cd in color_data:
+                c.execute('''INSERT INTO prod_order_colors
+                    (order_id, color_name, size_1, size_2, size_3, size_4, size_5, size_6)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                    (order_id, cd['name'], *cd['sizes']))
+
+            total_pairs = local_total_pairs
+
+            # 成型指令单：直接出库（使用序号码段）
+            if order_type == 'assembly':
+                total_quantities = [0]*6
+                for cd in color_data:
+                    for i in range(6):
+                        total_quantities[i] += cd['sizes'][i]
+
+                if sole_material_id and sole_source not in ('other', None):
+                    c.execute('''SELECT inventory_type, product_code, color FROM inventory WHERE id = ?''', (sole_material_id,))
+                    sole_inv = c.fetchone()
+                    try:
+                        consume_inventory(conn, sole_inv['inventory_type'], sole_inv['product_code'],
+                                          sole_inv['color'], total_quantities, order_id)
+                    except ValueError as e:
+                        conn.rollback()
+                        flash(str(e), 'danger')
+                        return redirect(url_for('create_order'))
+
+                if upper_material_id and upper_source not in ('other', None):
+                    c.execute('''SELECT inventory_type, product_code, color FROM inventory WHERE id = ?''', (upper_material_id,))
+                    upper_inv = c.fetchone()
+                    try:
+                        consume_inventory(conn, upper_inv['inventory_type'], upper_inv['product_code'],
+                                          upper_inv['color'], total_quantities, order_id)
+                    except ValueError as e:
+                        conn.rollback()
+                        flash(str(e), 'danger')
+                        return redirect(url_for('create_order'))
+
+                for item in other_materials_list:
+                    src = item['source']
+                    mat_id = item['material_id']
+                    if mat_id and src not in ('other', None):
+                        c.execute('''SELECT inventory_type, product_code, color FROM inventory WHERE id = ?''', (mat_id,))
+                        inv = c.fetchone()
+                        if inv:
+                            try:
+                                consume_inventory(conn, inv['inventory_type'], inv['product_code'],
+                                                  inv['color'], total_quantities, order_id)
+                            except ValueError as e:
+                                conn.rollback()
+                                flash(str(e), 'danger')
+                                return redirect(url_for('create_order'))
+
+            # 生成车间任务
+            if order_type == 'blow':
+                blow_task_id = _create_task(c, order_id, 'blow', total_pairs)
+                if not direct_sale:
+                    _create_task(c, order_id, 'paint', total_pairs, blow_task_id)
+            elif order_type == 'pu':
+                pu_task_id = _create_task(c, order_id, 'pu', total_pairs)
+                if not direct_sale:
+                    _create_task(c, order_id, 'paint', total_pairs, pu_task_id)
+            elif order_type == 'plastic':
+                _create_task(c, order_id, 'plastic', total_pairs)
+            elif order_type == 'assembly':
+                _create_task(c, order_id, 'assembly', total_pairs)
+
+            # 详细日志：记录创建的指令单和任务信息
+            app.logger.info(f"指令单创建: order_no={order_no}, type={order_type}, "
+                           f"total_pairs={total_pairs}, colors={len(color_data)}, "
+                           f"size_start={size_start}, size_end={size_end}")
+            for cd in color_data:
+                app.logger.info(f"  颜色: {cd['name']}, sizes={cd['sizes']}, sum={sum(cd['sizes'])}")
+
+            conn.commit()
+            flash(f'生产指令单 {order_no} 创建成功', 'success')
+            return redirect(url_for('index'))
+
+        except ValueError as e:
+            conn.rollback()
+            flash(str(e), 'danger')
+        except Exception as e:
+            conn.rollback()
+            app.logger.error(f"创建指令单失败: {e}", exc_info=True)
+            flash('创建失败，请稍后重试', 'danger')
+        finally:
+            conn.close()
+        return redirect(url_for('create_order'))
+
+    today = date.today().strftime('%Y-%m-%d')
+    order_type = request.args.get('type', 'blow')
+    return render_mobile('create_order.html', today=today, order_type=order_type)
+
+# ---------- 指令单详情 ----------
+@app.route('/order/<int:order_id>')
+@login_required
+def order_detail(order_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''SELECT id, order_no, product_code, sole_model, upper_model, created_date, status, notes,
+                            order_type, direct_sale, sole_source, sole_material_id, upper_source, upper_material_id, images,
+                            size_start, size_end
+                     FROM prod_orders WHERE id = ?''', (order_id,))
+        order = c.fetchone()
+        if not order:
+            flash('指令单不存在', 'danger')
+            return redirect(url_for('index'))
+        c.execute('''SELECT id, order_id, color_name,
+                    size_1, size_2, size_3, size_4, size_5, size_6,
+                    completed_1, completed_2, completed_3, completed_4, completed_5, completed_6
+                    FROM prod_order_colors WHERE order_id = ? ORDER BY color_name''', (order_id,))
+        colors_raw = c.fetchall()
+        colors = []
+        for cr in colors_raw:
+            colors.append({
+                'id': cr['id'],
+                'color_name': cr['color_name'],
+                'plan': [cr['size_1'], cr['size_2'], cr['size_3'], cr['size_4'], cr['size_5'], cr['size_6']],
+                'completed': [cr['completed_1'], cr['completed_2'], cr['completed_3'], cr['completed_4'], cr['completed_5'], cr['completed_6']]
+            })
+        c.execute('''SELECT w.name,
+                    t.total_boxes,
+                    t.completed_boxes,
+                    t.status,
+                    t.confirmed_at
+             FROM prod_tasks t
+             JOIN workshops w ON w.code = t.workshop_code
+             WHERE t.order_id = ?
+             ORDER BY w.sequence, w.name''', (order_id,))
+        tasks = c.fetchall()
+    finally:
+        conn.close()
+    return render_mobile('order_detail.html', order=order, colors=colors, tasks=tasks)
+
+# ---------- 库存管理页面 ----------
+@app.route('/inventory')
+@login_required
+def inventory_list():
+    inventory_type = request.args.get('type', 'blow_sole')
+    search = request.args.get('search', '').strip()
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        sql = '''SELECT id, inventory_type, product_code, material_name, color,
+                        size_1, size_2, size_3, size_4, size_5, size_6,
+                        unit, updated_at, notes, size_start, size_end
+                 FROM inventory WHERE inventory_type = ?'''
+        params = [inventory_type]
+        if search:
+            sql += " AND (product_code LIKE ? OR material_name LIKE ? OR color LIKE ?)"
+            params.extend([f'%{search}%', f'%{search}%', f'%{search}%'])
+        sql += " ORDER BY product_code"
+        c.execute(sql, params)
+        materials_raw = c.fetchall()
+        materials = []
+        for row in materials_raw:
+            quantities = [row['size_1'], row['size_2'], row['size_3'], row['size_4'], row['size_5'], row['size_6']]
+            unit = row['unit'] if row['unit'] else '双'
+            size_items = []
+            total = 0
+            for i, qty in enumerate(quantities):
+                if qty > 0:
+                    formatted = f"{qty:g}" if qty != int(qty) else str(int(qty))
+                    size_items.append((str(i+1), formatted))
+                    total += qty
+            materials.append({
+                'id': row['id'],
+                'product_code': row['product_code'],
+                'material_name': row['material_name'],
+                'color': row['color'],
+                'size_items': size_items,
+                'total': total,
+                'unit': unit,
+                'updated_at': row['updated_at'],
+                'notes': row['notes'],
+                'size_start': row['size_start'] or 37,
+                'size_end': row['size_end'] or 42
+            })
+    finally:
+        conn.close()
+    type_names = {
+        'blow_sole': '吹气鞋底',
+        'pu_sole': 'PU鞋底',
+        'paint_sole': '喷漆鞋底',
+        'plastic_upper': '滴塑帮面',
+        'domestic': '国内鞋材'
+    }
+    return render_mobile('inventory.html', materials=materials,
+                         inventory_type=inventory_type, search=search,
+                         type_names=type_names)
+
+# ---------- 库存删除（POST + 仅管理员） ----------
+@app.route('/inventory/<int:id>/delete', methods=['POST'])
+@login_required
+def inventory_delete(id):
+    if current_user.role != 'admin':
+        flash('无权限', 'danger')
+        return redirect(url_for('inventory_list'))
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT product_code FROM inventory WHERE id = ?", (id,))
+        row = c.fetchone()
+        if not row:
+            flash('库存记录不存在', 'danger')
+            return redirect(url_for('inventory_list'))
+        c.execute("DELETE FROM inventory_logs WHERE inventory_id = ?", (id,))
+        c.execute("DELETE FROM inventory WHERE id = ?", (id,))
+        conn.commit()
+        flash(f'已删除 {row["product_code"]}', 'success')
+    except Exception as e:
+        conn.rollback()
+        flash('删除失败', 'danger')
+    finally:
+        conn.close()
+    return redirect(url_for('inventory_list'))
+
+# ---------- 库存编辑 ----------
+@app.route('/api/inventory/<int:id>/update', methods=['POST'])
+@login_required
+def api_inventory_update(id):
+    if current_user.role != 'admin':
+        return jsonify({'success': False, 'error': '无权限'}), 403
+    data = request.get_json()
+    try:
+        product_code = validate_str(data.get('product_code'), max_len=30)
+        material_name = validate_str(data.get('material_name'), max_len=50)
+        color = validate_str(data.get('color'), max_len=20)
+        notes = validate_str(data.get('notes', ''), max_len=200, required=False)
+        size_start = validate_int(data.get('size_start', 37), min_val=1, max_val=99)
+        size_end = validate_int(data.get('size_end', 42), min_val=1, max_val=99)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        c.execute('''UPDATE inventory SET
+                    product_code = ?, material_name = ?, color = ?, notes = ?, updated_at = ?,
+                    size_start = ?, size_end = ?
+                    WHERE id = ?''',
+                  (product_code, material_name, color, notes, now, size_start, size_end, id))
+        conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
+
+# ---------- 车间任务页面 ----------
+@app.route('/workshop/tasks')
+@login_required
+def workshop_tasks():
+    workshop_code = request.args.get('workshop', 'blow') if current_user.role == 'admin' else current_user.workshop
+    workshop_names = {'blow': '吹气车间', 'pu': 'PU车间', 'paint': '喷漆车间', 'plastic': '滴塑车间', 'assembly': '成型车间'}
+    workshop_name = workshop_names.get(workshop_code, workshop_code)
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''SELECT t.id, t.order_id, po.order_no, po.product_code, po.sole_model, po.upper_model, po.created_date,
+                            t.total_boxes, t.completed_boxes, t.status, t.confirmed_at, po.direct_sale,
+                            t.received_quantity, t.received_at
+                     FROM prod_tasks t JOIN prod_orders po ON t.order_id = po.id
+                     WHERE t.workshop_code = ? AND t.status != 'completed'
+                     ORDER BY po.created_date DESC, t.id''', (workshop_code,))
+        raw_tasks = c.fetchall()
+        pending_tasks = []
+        for task in raw_tasks:
+            upstream_status = None
+            total_boxes = task['total_boxes']
+            completed_boxes = task['completed_boxes']
+            if workshop_code == 'paint':
+                c.execute('''SELECT workshop_code, status, completed_boxes, total_boxes FROM prod_tasks
+                             WHERE order_id = ? AND workshop_code IN ('blow', 'pu')''', (task['order_id'],))
+                upstream = c.fetchone()
+                if upstream:
+                    upstream_status = f'{workshop_names.get(upstream["workshop_code"], upstream["workshop_code"])}: {upstream["completed_boxes"]}/{upstream["total_boxes"]}'
+            elif workshop_code == 'assembly':
+                c.execute('''SELECT workshop_code, status, completed_boxes, total_boxes FROM prod_tasks
+                             WHERE order_id = ? AND workshop_code IN ('blow', 'pu', 'plastic')''', (task['order_id'],))
+                upstreams = c.fetchall()
+                upstream_status = ' | '.join([f'{workshop_names.get(u["workshop_code"], u["workshop_code"])}: {u["completed_boxes"]}/{u["total_boxes"]}' for u in upstreams])
+            pending_tasks.append({
+                'id': task['id'], 'order_id': task['order_id'], 'order_no': task['order_no'], 'product_code': task['product_code'],
+                'sole_model': task['sole_model'], 'upper_model': task['upper_model'],
+                'created_date': task['created_date'], 'total_boxes': total_boxes,
+                'completed_boxes': completed_boxes, 'status': task['status'],
+                'upstream_status': upstream_status,
+                'received_quantity': task['received_quantity'] or 0
+            })
+        c.execute('''SELECT t.id, t.order_id, po.order_no, po.product_code, po.sole_model, po.upper_model,
+                            t.total_boxes as total, t.completed_boxes as completed, t.status, t.confirmed_at
+                     FROM prod_tasks t JOIN prod_orders po ON t.order_id = po.id
+                     WHERE t.workshop_code = ? AND t.status = 'completed'
+                     ORDER BY t.confirmed_at DESC LIMIT 20''', (workshop_code,))
+        completed_tasks = c.fetchall()
+        workshops = []
+        if current_user.role == 'admin':
+            c.execute("SELECT code, name FROM workshops ORDER BY sequence, name")
+            workshops = c.fetchall()
+    finally:
+        conn.close()
+    return render_mobile('workshop_task.html', workshop_code=workshop_code, workshop_name=workshop_name,
+                         pending_tasks=pending_tasks, completed_tasks=completed_tasks, workshops=workshops,
+                         is_admin=(current_user.role == 'admin'))
+
+# ---------- API：任务详情（完全重构，统一使用序号码段）----------
+@app.route('/api/task/<int:task_id>')
+@login_required
+def api_task_detail(task_id):
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute('''SELECT t.id, t.order_id, t.workshop_code, t.total_boxes, t.completed_boxes, t.status,
+                            po.order_no, po.product_code, po.sole_model, po.upper_model, po.images,
+                            po.size_start, po.size_end
+                     FROM prod_tasks t JOIN prod_orders po ON t.order_id = po.id
+                     WHERE t.id = ?''', (task_id,))
+        task = c.fetchone()
+        app.logger.info(f"api_task_detail task_id={task_id}: total_boxes={task['total_boxes'] if task else 'NOT_FOUND'}")
+        if not task:
+            return jsonify({'success': False, 'error': '任务不存在'}), 404
+        if current_user.role != 'admin' and current_user.workshop != task['workshop_code']:
+            return jsonify({'success': False, 'error': '无权限'}), 403
+
+        c.execute('''SELECT id, color_name,
+                            size_1, size_2, size_3, size_4, size_5, size_6,
+                            completed_1, completed_2, completed_3, completed_4, completed_5, completed_6
+                     FROM prod_order_colors WHERE order_id = ? ORDER BY color_name''', (task['order_id'],))
+        colors = c.fetchall()
+
+        upstream_ready = True
+        upstream_info = []
+        workshop_names = {'blow': '吹气', 'pu': 'PU', 'paint': '喷漆', 'plastic': '滴塑', 'assembly': '成型'}
+        if task['workshop_code'] == 'paint':
+            c.execute('''SELECT workshop_code, status, completed_boxes, total_boxes FROM prod_tasks
+                         WHERE order_id = ? AND workshop_code IN ('blow', 'pu')''', (task['order_id'],))
+            upstream = c.fetchone()
+            if upstream:
+                upstream_ready = upstream['status'] == 'completed'
+                upstream_info.append({'name': workshop_names.get(upstream['workshop_code'], upstream['workshop_code']), 'ready': upstream_ready, 'completed': upstream['completed_boxes'], 'total': upstream['total_boxes']})
+        elif task['workshop_code'] == 'assembly':
+            c.execute('''SELECT workshop_code, status, completed_boxes, total_boxes FROM prod_tasks
+                         WHERE order_id = ? AND workshop_code IN ('blow', 'pu', 'plastic')''', (task['order_id'],))
+            upstreams = c.fetchall()
+            for u in upstreams:
+                ready = u['status'] == 'completed'
+                upstream_ready = upstream_ready and ready
+                upstream_info.append({'name': workshop_names.get(u['workshop_code'], u['workshop_code']), 'ready': ready, 'completed': u['completed_boxes'], 'total': u['total_boxes']})
+
+        colors_data = []
+        for col in colors:
+            plan = [col['size_1'], col['size_2'], col['size_3'], col['size_4'], col['size_5'], col['size_6']]
+            completed = [col['completed_1'], col['completed_2'], col['completed_3'], col['completed_4'], col['completed_5'], col['completed_6']]
+            colors_data.append({
+                'id': col['id'],
+                'name': col['color_name'],
+                'plan': plan,
+                'completed': completed
+            })
+
+        return jsonify({
+            'success': True,
+            'task': dict(task),
+            'colors': colors_data,
+            'upstream_ready': upstream_ready,
+            'upstream_info': upstream_info,
+            'size_start': task['size_start'] or 37,
+            'size_end': task['size_end'] or 42
+        })
+    finally:
+        conn.close()
+
+# ---------- API：任务完成提交（完全重构，统一使用序号码段）----------
+@app.route('/api/task/<int:task_id>/update_sizes', methods=['POST'])
+@login_required
+def api_task_update_sizes(task_id):
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'error': '无效的请求数据'}), 400
+
+    colors_data = data.get('colors', [])
+    mark_all_complete = data.get('mark_all_complete', False)
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("BEGIN IMMEDIATE")
+        c.execute('SELECT order_id, workshop_code, total_boxes, completed_boxes FROM prod_tasks WHERE id = ?', (task_id,))
+        task = c.fetchone()
+        if not task:
+            return jsonify({'success': False, 'error': '任务不存在'}), 404
+
+        if current_user.role != 'admin' and current_user.workshop != task['workshop_code']:
+            return jsonify({'success': False, 'error': '无权限'}), 403
+
+        upstream_ready = True
+        if task['workshop_code'] == 'paint':
+            c.execute('''SELECT id FROM prod_tasks WHERE order_id = ? AND workshop_code IN ('blow', 'pu') AND status != 'completed' ''', (task['order_id'],))
+            if c.fetchone():
+                upstream_ready = False
+        elif task['workshop_code'] == 'assembly':
+            c.execute('''SELECT id FROM prod_tasks WHERE order_id = ? AND workshop_code IN ('blow', 'pu', 'plastic') AND status != 'completed' ''', (task['order_id'],))
+            if c.fetchone():
+                upstream_ready = False
+        if not upstream_ready:
+            return jsonify({'success': False, 'error': '上游车间尚未完成，无法提交'}), 400
+
+        if task['workshop_code'] == 'paint':
+            c.execute('SELECT received_quantity FROM prod_tasks WHERE id = ?', (task_id,))
+            if c.fetchone()['received_quantity'] <= 0:
+                return jsonify({'success': False, 'error': '请先接收上游鞋底后再提交完成'}), 400
+
+        # 获取所有颜色数据
+        c.execute('''SELECT id, color_name,
+                            size_1, size_2, size_3, size_4, size_5, size_6,
+                            completed_1, completed_2, completed_3, completed_4, completed_5, completed_6
+                     FROM prod_order_colors WHERE order_id = ? ORDER BY id''', (task['order_id'],))
+        all_colors = c.fetchall()
+        if not all_colors:
+            return jsonify({'success': False, 'error': '订单颜色数据缺失'}), 400
+
+        color_map = {col['id']: col for col in all_colors}
+        increments = {}  # {color_id: [inc1, inc2, inc3, inc4, inc5, inc6]}
+
+        if mark_all_complete:
+            for col in all_colors:
+                plan = [col[f'size_{i}'] for i in range(1,7)]
+                old_comp = [col[f'completed_{i}'] for i in range(1,7)]
+                inc = [plan[i] - old_comp[i] for i in range(6)]
+                increments[col['id']] = inc
+                c.execute('''UPDATE prod_order_colors SET
+                             completed_1 = size_1, completed_2 = size_2, completed_3 = size_3,
+                             completed_4 = size_4, completed_5 = size_5, completed_6 = size_6
+                             WHERE id = ?''', (col['id'],))
+        else:
+            for item in colors_data:
+                color_id = item.get('id')
+                if color_id not in color_map:
+                    continue
+                col = color_map[color_id]
+                submitted = item.get('completed', [])
+                if len(submitted) != 6:
+                    return jsonify({'success': False, 'error': f'颜色 {col["color_name"]} 完成数量长度必须为6'}), 400
+
+                plan = [col[f'size_{i}'] for i in range(1,7)]
+                old_comp = [col[f'completed_{i}'] for i in range(1,7)]
+                new_comp = [0]*6
+                inc = [0]*6
+                for i, val in enumerate(submitted):
+                    if val is None or val < 0:
+                        return jsonify({'success': False, 'error': '完成数量无效'}), 400
+                    if val > plan[i]:
+                        return jsonify({'success': False, 'error': f'码段{i+1}完成数量超过计划 {plan[i]}'}), 400
+                    new_comp[i] = val
+                    inc[i] = val - old_comp[i]
+                increments[color_id] = inc
+                c.execute('''UPDATE prod_order_colors SET
+                             completed_1 = ?, completed_2 = ?, completed_3 = ?,
+                             completed_4 = ?, completed_5 = ?, completed_6 = ?
+                             WHERE id = ?''', (*new_comp, color_id))
+
+        # 汇总任务完成数量
+        c.execute('''SELECT SUM(completed_1 + completed_2 + completed_3 + completed_4 + completed_5 + completed_6) as total
+                     FROM prod_order_colors WHERE order_id = ?''', (task['order_id'],))
+        actual_completed = c.fetchone()['total'] or 0
+        new_status = 'completed' if actual_completed >= task['total_boxes'] else 'pending'
+        c.execute('UPDATE prod_tasks SET completed_boxes = ?, status = ?, confirmed_by = ?, confirmed_at = ? WHERE id = ?',
+                  (actual_completed, new_status, current_user.id, now, task_id))
+
+        # 生产入库（按颜色、按码段增量）
+        added = actual_completed - task['completed_boxes']
+        if task['workshop_code'] in ('blow', 'pu', 'plastic') and added > 0:
+            inv_type_map = {'blow': 'blow_sole', 'pu': 'pu_sole', 'plastic': 'plastic_upper'}
+            inv_type = inv_type_map[task['workshop_code']]
+            c.execute("SELECT product_code, size_start, size_end FROM prod_orders WHERE id = ?", (task['order_id'],))
+            order_row = c.fetchone()
+            product_code = order_row['product_code']
+            order_size_start = order_row['size_start'] or 37
+            order_size_end = order_row['size_end'] or 42
+
+            for color_id, inc_array in increments.items():
+                if sum(inc_array) <= 0:
+                    continue
+                col = color_map[color_id]
+                color_name = col['color_name']
+
+                c.execute('''SELECT id FROM inventory 
+                             WHERE inventory_type = ? AND product_code = ? AND color = ?''',
+                          (inv_type, product_code, color_name))
+                inv = c.fetchone()
+                if inv:
+                    for i, qty in enumerate(inc_array):
+                        if qty > 0:
+                            c.execute(f"UPDATE inventory SET size_{i+1} = size_{i+1} + ?, updated_at = ? WHERE id = ?",
+                                      (qty, now, inv['id']))
+                    # 同步码段范围（订单可能更新了范围）
+                    c.execute("UPDATE inventory SET size_start = ?, size_end = ? WHERE id = ?",
+                              (order_size_start, order_size_end, inv['id']))
+                    action = 'produce_in'
+                    inv_id = inv['id']
+                else:
+                    c.execute('''INSERT INTO inventory 
+                                (inventory_type, product_code, material_name, color,
+                                 size_1, size_2, size_3, size_4, size_5, size_6, unit, created_at, updated_at,
+                                 size_start, size_end)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '双', ?, ?, ?, ?)''',
+                              (inv_type, product_code, product_code, color_name, *inc_array, now, now,
+                               order_size_start, order_size_end))
+                    inv_id = c.lastrowid
+                    action = 'produce_in_new'
+                c.execute('''INSERT INTO inventory_logs (inventory_id, action, sizes_json, operator_id, timestamp, task_id, notes)
+                             VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                          (inv_id, action, json.dumps(inc_array), current_user.id, now, task_id, f'车间{task["workshop_code"]}生产入库'))
+
+        # 更新订单状态
+        if new_status == 'completed' and task['workshop_code'] == 'assembly':
+            c.execute('UPDATE prod_orders SET status = ? WHERE id = ?', ('completed', task['order_id']))
+        elif new_status == 'completed':
+            c.execute('''SELECT COUNT(*) as cnt FROM prod_tasks WHERE order_id = ? AND status != 'completed' ''', (task['order_id'],))
+            if c.fetchone()['cnt'] == 0:
+                c.execute('UPDATE prod_orders SET status = ? WHERE id = ?', ('completed', task['order_id']))
+            else:
+                c.execute('UPDATE prod_orders SET status = ? WHERE id = ?', ('partial', task['order_id']))
+
+        conn.commit()
+        return jsonify({'success': True, 'message': f'成功更新，当前完成 {actual_completed} 双'})
+
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"任务更新失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': f'服务器内部错误: {str(e)}'}), 500
+    finally:
+        conn.close()
+
+# ---------- API：喷漆接收 ----------
+@app.route('/api/task/<int:task_id>/receive', methods=['POST'])
+@login_required
+def api_task_receive(task_id):
+    data = request.get_json()
+    received_quantity = validate_int(data.get('quantity', 0), min_val=1)
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("BEGIN IMMEDIATE")
+        c.execute('''SELECT t.id, t.order_id, t.workshop_code, t.total_boxes,
+                            po.product_code, po.size_start, po.size_end
+                     FROM prod_tasks t
+                     JOIN prod_orders po ON t.order_id = po.id
+                     WHERE t.id = ? AND t.workshop_code = 'paint' ''', (task_id,))
+        task = c.fetchone()
+        if not task:
+            return jsonify({'success': False, 'error': '无效任务'}), 400
+
+        c.execute('''SELECT workshop_code, completed_boxes FROM prod_tasks
+                     WHERE order_id = ? AND workshop_code IN ('blow', 'pu')''', (task['order_id'],))
+        upstream = c.fetchone()
+        if not upstream or upstream['completed_boxes'] < received_quantity:
+            return jsonify({'success': False, 'error': '上游完成数量不足'}), 400
+
+        source_type = 'blow_sole' if upstream['workshop_code'] == 'blow' else 'pu_sole'
+        product_code = task['product_code']
+        c.execute("SELECT color_name FROM prod_order_colors WHERE order_id = ? LIMIT 1", (task['order_id'],))
+        color_row = c.fetchone()
+        color = color_row['color_name'] if color_row else '默认'
+
+        c.execute('''SELECT id, size_1, size_2, size_3, size_4, size_5, size_6 FROM inventory
+                     WHERE inventory_type = ? AND product_code = ? AND color = ?''',
+                  (source_type, product_code, color))
+        src = c.fetchone()
+        if not src:
+            return jsonify({'success': False, 'error': f'源库存不存在'}), 400
+
+        src_quantities = [src[f'size_{i}'] or 0 for i in range(1,7)]
+        total_avail = sum(src_quantities)
+        if total_avail < received_quantity:
+            return jsonify({'success': False, 'error': '源库存不足'}), 400
+
+        ratio = received_quantity / total_avail if total_avail > 0 else 0
+        deduct = [round(q * ratio) for q in src_quantities]
+
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        for i, d in enumerate(deduct):
+            if d > 0:
+                c.execute(f"UPDATE inventory SET size_{i+1} = size_{i+1} - ? WHERE id = ?", (d, src['id']))
+        c.execute('''INSERT INTO inventory_logs (inventory_id, action, sizes_json, operator_id, timestamp, task_id, notes)
+                     VALUES (?, 'transfer_out', ?, ?, ?, ?, ?)''',
+                  (src['id'], json.dumps(deduct), current_user.id, now, task_id, '转移至喷漆'))
+
+        c.execute('''SELECT id, size_start, size_end FROM inventory 
+                     WHERE inventory_type = 'paint_sole' AND product_code = ? AND color = ?''',
+                  (product_code, color))
+        tgt = c.fetchone()
+        if not tgt:
+            c.execute('''INSERT INTO inventory 
+                        (inventory_type, product_code, material_name, color,
+                         size_1, size_2, size_3, size_4, size_5, size_6, unit, created_at, updated_at,
+                         size_start, size_end)
+                        VALUES ('paint_sole', ?, ?, ?, 0,0,0,0,0,0, '双', ?, ?, ?, ?)''',
+                      (product_code, product_code, color, now, now,
+                       task['size_start'] or 37, task['size_end'] or 42))
+            tgt_id = c.lastrowid
+        else:
+            tgt_id = tgt['id']
+            # 同步码段范围
+            c.execute("UPDATE inventory SET size_start = ?, size_end = ? WHERE id = ?",
+                      (task['size_start'] or 37, task['size_end'] or 42, tgt_id))
+
+        for i, d in enumerate(deduct):
+            if d > 0:
+                c.execute(f"UPDATE inventory SET size_{i+1} = size_{i+1} + ? WHERE id = ?", (d, tgt_id))
+        c.execute('''INSERT INTO inventory_logs (inventory_id, action, sizes_json, operator_id, timestamp, task_id, notes)
+                     VALUES (?, 'transfer_in', ?, ?, ?, ?, ?)''',
+                  (tgt_id, json.dumps(deduct), current_user.id, now, task_id, '来自吹气/PU'))
+
+        c.execute('UPDATE prod_tasks SET received_quantity = ?, received_at = ? WHERE id = ?',
+                  (received_quantity, now, task_id))
+        conn.commit()
+        return jsonify({'success': True, 'message': f'已接收 {received_quantity} 双'})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
+
+# ---------- API：成型出库 ----------
+@app.route('/api/task/<int:task_id>/complete_assembly_with_sizes', methods=['POST'])
+@login_required
+def api_complete_assembly_with_sizes(task_id):
+    data = request.get_json()
+    if not data:
+        return jsonify({'success': False, 'error': '无效的请求数据'}), 400
+
+    colors_data = data.get('colors', [])
+    now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("BEGIN IMMEDIATE")
+        c.execute('SELECT order_id, total_boxes, completed_boxes FROM prod_tasks WHERE id = ? AND workshop_code = "assembly"', (task_id,))
+        task = c.fetchone()
+        if not task:
+            return jsonify({'success': False, 'error': '任务不存在或非成型任务'}), 404
+
+        if current_user.role != 'admin' and current_user.workshop != 'assembly':
+            return jsonify({'success': False, 'error': '无权限'}), 403
+
+        total_added = 0
+        for color in colors_data:
+            sizes = color['completed']
+            total_added += sum(sizes)
+            c.execute('''UPDATE prod_order_colors SET
+                         completed_1 = completed_1 + ?,
+                         completed_2 = completed_2 + ?,
+                         completed_3 = completed_3 + ?,
+                         completed_4 = completed_4 + ?,
+                         completed_5 = completed_5 + ?,
+                         completed_6 = completed_6 + ?
+                         WHERE id = ?''',
+                      (*sizes, color['id']))
+
+        new_completed = task['completed_boxes'] + total_added
+        new_status = 'completed' if new_completed >= task['total_boxes'] else 'pending'
+
+        c.execute('UPDATE prod_tasks SET completed_boxes = ?, status = ?, confirmed_by = ?, confirmed_at = ? WHERE id = ?',
+                  (new_completed, new_status, current_user.id, now, task_id))
+
+        if new_status == 'completed':
+            c.execute('UPDATE prod_orders SET status = ? WHERE id = ?', ('completed', task['order_id']))
+        else:
+            c.execute('UPDATE prod_orders SET status = ? WHERE id = ?', ('partial', task['order_id']))
+
+        conn.commit()
+        return jsonify({'success': True, 'message': f'成型出库完成 {total_added} 双'})
+
+    except Exception as e:
+        conn.rollback()
+        app.logger.error(f"成型出库失败: {str(e)}", exc_info=True)
+        return jsonify({'success': False, 'error': f'服务器内部错误: {str(e)}'}), 500
+    finally:
+        conn.close()
+
+# ---------- 用户管理 ----------
+@app.route('/admin/users')
+@login_required
+def admin_users():
+    if current_user.role != 'admin':
+        flash('无权限', 'danger')
+        return redirect(url_for('index'))
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id, username, role, workshop FROM users WHERE role = 'worker' ORDER BY workshop, username")
+        workers = c.fetchall()
+    finally:
+        conn.close()
+    return render_mobile('user_management.html', workers=workers)
+
+@app.route('/admin/user/<int:user_id>/update', methods=['POST'])
+@login_required
+def admin_update_user(user_id):
+    if current_user.role != 'admin':
+        return jsonify({'success': False, 'error': '无权限'}), 403
+    data = request.get_json()
+    new_username = validate_str(data.get('username', ''), max_len=30)
+    new_password = data.get('password', '').strip()
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        c.execute("SELECT id FROM users WHERE username = ? AND id != ?", (new_username, user_id))
+        if c.fetchone():
+            return jsonify({'success': False, 'error': '用户名已存在'}), 400
+        if new_password:
+            hashed = generate_password_hash(new_password)
+            c.execute("UPDATE users SET username = ?, password = ? WHERE id = ?", (new_username, hashed, user_id))
+        else:
+            c.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, user_id))
+        conn.commit()
+        return jsonify({'success': True})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
+
+# ---------- 安全设置 ----------
+@app.route('/security_settings', methods=['GET', 'POST'])
+@login_required
+def security_settings():
+    if request.method == 'POST':
+        new_username = request.form.get('new_username', '').strip()
+        old_password = request.form.get('old_password', '')
+        new_password = request.form.get('new_password', '')
+        confirm_password = request.form.get('confirm_password', '')
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            if new_username and new_username != current_user.username:
+                c.execute("SELECT id FROM users WHERE username = ?", (new_username,))
+                if c.fetchone():
+                    flash('用户名已存在', 'danger')
+                    return redirect(url_for('security_settings'))
+                c.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, current_user.id))
+                conn.commit()
+                flash('用户名修改成功，请重新登录', 'success')
+                logout_user()
+                return redirect(url_for('login'))
+            if new_password:
+                if not old_password:
+                    flash('需要原密码', 'danger')
+                    return redirect(url_for('security_settings'))
+                if new_password != confirm_password:
+                    flash('两次密码不一致', 'danger')
+                    return redirect(url_for('security_settings'))
+                c.execute("SELECT password FROM users WHERE id = ?", (current_user.id,))
+                hashed = c.fetchone()['password']
+                if not check_password_hash(hashed, old_password):
+                    flash('原密码错误', 'danger')
+                    return redirect(url_for('security_settings'))
+                c.execute("UPDATE users SET password = ? WHERE id = ?", (generate_password_hash(new_password), current_user.id))
+                conn.commit()
+                flash('密码修改成功，请重新登录', 'success')
+                logout_user()
+                return redirect(url_for('login'))
+            flash('未做任何修改', 'info')
+        except Exception as e:
+            conn.rollback()
+            flash('操作失败', 'danger')
+        finally:
+            conn.close()
+        return redirect(url_for('security_settings'))
+    return render_mobile('security_settings.html')
+
+# ---------- 启动 ----------
+if __name__ == '__main__':
+    if not os.path.exists('production.db'):
+        init_db()
+    else:
+        # 确保表结构与新模型兼容，可在此执行升级（但建议全新初始化）
+        init_db()
+    app.run(debug=False, host='0.0.0.0', port=5000)

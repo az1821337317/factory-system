@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes, viewport-fit=cover">
+    <title>登录 · 生产指令系统</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: radial-gradient(circle at 10% 20%, #2563eb, #7c3aed);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+        .login-container {
+            width: 100%;
+            max-width: 420px;
+        }
+        .login-card {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(30px);
+            -webkit-backdrop-filter: blur(30px);
+            border-radius: 36px;
+            padding: 2.5rem 2rem;
+            box-shadow: 0 30px 50px -10px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.3) inset;
+            border: 1px solid rgba(255,255,255,0.5);
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+        .logo-icon { font-size: 3rem; margin-bottom: 0.5rem; }
+        .logo h1 {
+            font-size: 2rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #1e293b, #0f172a);
+            -webkit-background-clip: text;
+            background-clip: text;
+            color: transparent;
+            letter-spacing: -0.5px;
+        }
+        .logo p {
+            color: #475569;
+            font-size: 0.9rem;
+            margin-top: 0.3rem;
+            font-weight: 500;
+        }
+        .alert {
+            padding: 1rem;
+            border-radius: 20px;
+            margin-bottom: 1.8rem;
+            background: rgba(254, 226, 226, 0.9);
+            color: #991b1b;
+            border-left: 4px solid #ef4444;
+            backdrop-filter: blur(5px);
+        }
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+        .input-icon {
+            position: absolute;
+            left: 1.2rem;
+            font-size: 1.2rem;
+            opacity: 0.6;
+        }
+        input {
+            width: 100%;
+            padding: 1rem 1rem 1rem 3rem;
+            font-size: 1rem;
+            border: 1.5px solid rgba(203, 213, 225, 0.6);
+            border-radius: 30px;
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(5px);
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            background: white;
+            box-shadow: 0 8px 20px -8px rgba(59, 130, 246, 0.3);
+        }
+        button {
+            width: 100%;
+            padding: 1rem;
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: white;
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            border: none;
+            border-radius: 40px;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 0.8rem;
+            box-shadow: 0 12px 20px -8px rgba(37, 99, 235, 0.4);
+            border: 1px solid rgba(255,255,255,0.3);
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 16px 24px -8px rgba(37, 99, 235, 0.5);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 2rem;
+            color: rgba(255, 255, 255, 0.9);
+            font-weight: 500;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .contact-hint {
+            margin-top: 1.5rem;
+            text-align: center;
+            color: #475569;
+            background: rgba(255,255,255,0.4);
+            padding: 0.7rem;
+            border-radius: 40px;
+            backdrop-filter: blur(10px);
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-card">
+            <div class="logo">
+                <div class="logo-icon">🏭</div>
+                <h1>生产指令系统</h1>
+                <p>高效 · 协同 · 智能</p>
+            </div>
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="alert alert-{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form method="post" id="loginForm">
+                <div class="input-wrapper">
+                    <span class="input-icon">👤</span>
+                    <input type="text" name="username" placeholder="用户名" required autofocus>
+                </div>
+                <div class="input-wrapper">
+                    <span class="input-icon">🔒</span>
+                    <input type="password" name="password" placeholder="密码" required>
+                </div>
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" id="loginBtn">登 录</button>
+            </form>
+            <div class="contact-hint">
+                🔐 忘记密码？请联系管理员
+            </div>
+        </div>
+        <div class="footer">
+            © 2026 生产指令系统 · 车间协同
+        </div>
+    </div>
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', function() {
+            const btn = document.getElementById('loginBtn');
+            btn.disabled = true;
+            btn.textContent = '登录中...';
+        });
+    </script>
+</body>
+</html>
